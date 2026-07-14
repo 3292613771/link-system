@@ -139,7 +139,7 @@ def auto_create_link():
         'query_count': 0
     }
     save_links(links)
-    link_url = f"https://你的域名/query?link={link_id}"
+    link_url = f"https://mail-auto.zeabur.app/query?link={link_id}"
     return jsonify({
         'success': True,
         'link_id': link_id,
