@@ -5,13 +5,12 @@ try:
     time.tzset()
 except:
     pass
-    
+
 from flask import Flask, request, jsonify, redirect, session, send_from_directory
 import imaplib
 import email
 import re
 import html
-import os
 import json
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -39,7 +38,7 @@ def load_accounts():
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 if "----" in line:
                     parts = line.split("----")
                     if len(parts) == 2:
@@ -107,9 +106,9 @@ def clean_html_to_text(html_text):
 def get_mail_content(msg):
     import re
     import html
-    
+
     content = ""
-    
+
     try:
         all_parts = []
         if msg.is_multipart():
@@ -133,12 +132,12 @@ def get_mail_content(msg):
                     text = payload.decode('utf-8', errors='replace')
                 if text.strip():
                     all_parts.append((msg.get_content_type(), text))
-        
+
         for content_type, text in all_parts:
             if content_type == "text/plain":
                 content = text.strip()
                 break
-        
+
         if not content:
             for content_type, text in all_parts:
                 if content_type == "text/html":
@@ -148,10 +147,10 @@ def get_mail_content(msg):
                     content = re.sub(r'\s+', ' ', content)
                     content = content.strip()
                     break
-        
+
         if not content:
             return "无法解析邮件内容"
-        
+
         code = None
         match = re.search(r'(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)', content)
         if match:
@@ -160,30 +159,30 @@ def get_mail_content(msg):
             match = re.search(r'\b(\d{6})\b', content)
             if match:
                 code = match.group(1)
-        
+
         content = content[:1000]
-        
+
         if code:
             return f"验证码：{code}\n\n{content}"
         return content
-        
+
     except Exception as e:
         return f"解析失败"
 
 def get_latest_mails(email_addr, limit=10):
     if email_addr not in ACCOUNTS:
         return {'error': f'邮箱 "{email_addr}" 未绑定'}
-    
+
     auth_code = ACCOUNTS[email_addr]
     mail = None
-    
+
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
-        
+
         all_mail_ids = []
         folder_info = []
-        
+
         # 读取收件箱
         try:
             mail.select("INBOX")
@@ -194,7 +193,7 @@ def get_latest_mails(email_addr, limit=10):
                     folder_info.append("INBOX")
         except Exception as e:
             print(f"读取收件箱失败: {e}")
-        
+
         # 读取垃圾箱
         spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
         for folder in spam_folders:
@@ -208,10 +207,10 @@ def get_latest_mails(email_addr, limit=10):
                 break
             except:
                 continue
-        
+
         if not all_mail_ids:
             return []
-        
+
         seen = set()
         unique_ids = []
         unique_folders = []
@@ -221,23 +220,23 @@ def get_latest_mails(email_addr, limit=10):
                 seen.add(mid_str)
                 unique_ids.append(mid)
                 unique_folders.append(folder)
-        
+
         sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
         latest_pairs = sorted_pairs[-limit:]
-        
+
         mails = []
-        
+
         for mail_id, folder in reversed(latest_pairs):
             try:
                 mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
-                
+
                 mail.select(folder)
                 _, msg_data = mail.fetch(mail_id, "(RFC822)")
-                
+
                 for part in msg_data:
                     if isinstance(part, tuple):
                         msg = email.message_from_bytes(part[1])
-                        
+
                         date_str = msg.get("Date", "")
                         send_time = ""
                         try:
@@ -250,7 +249,7 @@ def get_latest_mails(email_addr, limit=10):
                         subject = decode_str(msg.get("Subject", "无主题"))
                         sender = decode_str(msg.get("From", "未知发件人"))
                         content = get_mail_content(msg)
-                        
+
                         mails.append({
                             'mail_id': mail_id_str,
                             'sender': sender,
@@ -262,12 +261,12 @@ def get_latest_mails(email_addr, limit=10):
             except Exception as e:
                 print(f"读取单封邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
                 continue
-        
+
         return mails
-        
+
     except Exception as e:
         return {'error': f'连接失败：{str(e)}'}
-    
+
     finally:
         if mail:
             try:
@@ -313,24 +312,24 @@ def detect_email_type(email):
 def assign_emails(type_name, quantity, buyer_id):
     all_emails = list(ACCOUNTS.keys())
     type_emails = [e for e in all_emails if detect_email_type(e) == type_name]
-    
+
     if not type_emails:
         return None, f"类型 '{type_name}' 没有可用邮箱"
-    
+
     used_data = load_used_emails()
     buyer_used = used_data.get("records", {}).get(buyer_id, [])
     available = [e for e in type_emails if e not in buyer_used]
-    
+
     if len(available) < quantity:
         return None, f"类型 '{type_name}' 库存不足！需要 {quantity} 个，该买家还能领 {len(available)} 个"
-    
+
     selected = random.sample(available, quantity)
-    
+
     if buyer_id not in used_data["records"]:
         used_data["records"][buyer_id] = []
     used_data["records"][buyer_id].extend(selected)
     save_used_emails(used_data)
-    
+
     return selected, None
 
 # ===== 登录页面 =====
@@ -346,7 +345,7 @@ def login():
             <h2>密码错误</h2>
             <p><a href="/login">重新输入</a></p>
             '''
-    
+
     return '''
     <!DOCTYPE html>
     <html>
@@ -361,39 +360,43 @@ def login():
     </html>
     '''
 
+# ===== 健康检查接口（供闲管家验证） =====
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    """闲管家连通性验证接口"""
     return jsonify({"status": "ok", "code": 200, "msg": "服务运行正常"})
 
+# ===== API路由 =====
 @app.route('/api/auto_create_link', methods=['GET', 'POST'])
 def auto_create_link():
-    # 处理 GET 请求（闲管家验证连通性）
+    # GET请求：供闲管家验证连通性
     if request.method == 'GET':
         return jsonify({"status": "ok", "code": 200, "msg": "API 可用"})
 
-    # 原有的 POST 处理逻辑（保持不变）
+    # POST请求：生成链接
     data = request.get_json()
+    if not data:
+        return jsonify({"code": 400, "msg": "请求体不能为空"}), 400
+
     type_name = data.get('type', '英文')
     quantity = data.get('quantity', 1)
     days = data.get('days', DEFAULT_DAYS)
     buyer_id = data.get('buyer_id', str(uuid.uuid4())[:8])
-    
+
     if quantity <= 0:
-        return jsonify({'error': '数量必须大于0'}), 400
-    
+        return jsonify({"code": 400, "msg": "数量必须大于0"}), 400
+
     valid_types = ["数字", "英文", "foxmail"]
     if type_name not in valid_types:
-        return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
-    
+        return jsonify({"code": 400, "msg": f"无效类型，请选择: {', '.join(valid_types)}"}), 400
+
     selected_emails, error = assign_emails(type_name, quantity, buyer_id)
     if error:
-        return jsonify({'error': error}), 400
-    
+        return jsonify({"code": 400, "msg": error}), 400
+
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
     now = datetime.now()
-    
+
     links[link_id] = {
         'link_id': link_id,
         'buyer_id': buyer_id,
@@ -406,9 +409,9 @@ def auto_create_link():
         'query_count': 0
     }
     save_links(links)
-    
+
     link_url = f"https://{DOMAIN}/query?link={link_id}"
-    
+
     return jsonify({
         "code": 200,
         "msg": "success",
@@ -422,7 +425,8 @@ def auto_create_link():
             "expire_at": links[link_id]['expire_at']
         }
     })
-# ===== 路由 =====
+
+# ===== 页面路由 =====
 @app.route('/')
 def index():
     return redirect('/admin')
@@ -431,17 +435,17 @@ def index():
 def admin():
     if not session.get('logged_in'):
         return redirect('/login')
-    
+
     links = load_links()
     used_data = load_used_emails()
     all_emails = list(ACCOUNTS.keys())
-    
+
     total = len(all_emails)
     all_used = []
     for buyer, emails in used_data.get("records", {}).items():
         all_used.extend(emails)
     used = len(set(all_used))
-    
+
     link_list = ""
     for link_id, data in links.items():
         status = '✅ 有效' if data['status'] == 'active' else '⛔ 禁用'
@@ -456,7 +460,7 @@ def admin():
             <td>{status}</td>
         </tr>
         """
-    
+
     html_admin = f'''
     <h2>📦 链接管理后台</h2>
     <hr>
@@ -495,16 +499,16 @@ def admin_create_link():
     emails_text = request.form.get('emails', '')
     type_name = request.form.get('type', '英文')
     days = int(request.form.get('days', 30))
-    
+
     emails = [e.strip() for e in emails_text.strip().split('\n') if e.strip()]
-    
+
     if not emails:
         return "请至少输入一个邮箱", 400
-    
+
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
     now = datetime.now()
-    
+
     links[link_id] = {
         'link_id': link_id,
         'buyer_id': 'admin',
@@ -517,9 +521,9 @@ def admin_create_link():
         'query_count': 0
     }
     save_links(links)
-    
+
     link_url = f"https://{DOMAIN}/query?link={link_id}"
-    
+
     return f'''
     生成成功！<br>
     链接：<a href="{link_url}" target="_blank">{link_url}</a><br>
@@ -528,74 +532,26 @@ def admin_create_link():
     <a href="/admin">返回后台</a>
     '''
 
-@app.route('/api/auto_create_link', methods=['POST'])
-def auto_create_link():
-    data = request.get_json()
-    type_name = data.get('type', '英文')
-    quantity = data.get('quantity', 1)
-    days = data.get('days', DEFAULT_DAYS)
-    buyer_id = data.get('buyer_id', str(uuid.uuid4())[:8])
-    
-    if quantity <= 0:
-        return jsonify({'error': '数量必须大于0'}), 400
-    
-    valid_types = ["数字", "英文", "foxmail"]
-    if type_name not in valid_types:
-        return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
-    
-    selected_emails, error = assign_emails(type_name, quantity, buyer_id)
-    if error:
-        return jsonify({'error': error}), 400
-    
-    link_id = str(uuid.uuid4())[:8]
-    links = load_links()
-    now = datetime.now()
-    
-    links[link_id] = {
-        'link_id': link_id,
-        'buyer_id': buyer_id,
-        'type': type_name,
-        'emails': selected_emails,
-        'quantity': quantity,
-        'created_at': now.strftime("%Y-%m-%d %H:%M:%S"),
-        'expire_at': (now + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
-        'status': 'active',
-        'query_count': 0
-    }
-    save_links(links)
-    
-    link_url = f"https://{DOMAIN}/query?link={link_id}"
-    
-    return jsonify({
-        'success': True,
-        'link_id': link_id,
-        'link_url': link_url,
-        'type': type_name,
-        'emails': selected_emails,
-        'quantity': quantity,
-        'expire_at': links[link_id]['expire_at']
-    })
-
 @app.route('/query')
 def query_page():
     link_id = request.args.get('link')
     if not link_id:
         return "缺少链接ID"
-    
+
     links = load_links()
     if link_id not in links:
         return "链接不存在"
-    
+
     link_data = links[link_id]
     now = datetime.now()
     expire_time = datetime.strptime(link_data['expire_at'], "%Y-%m-%d %H:%M:%S")
-    
+
     if now > expire_time:
         return "⛔ 链接已过期"
-    
+
     if link_data['status'] != 'active':
         return "⛔ 链接已被禁用"
-    
+
     html_content = f'''
     <!DOCTYPE html>
     <html>
@@ -620,35 +576,33 @@ def query_page():
 def query_mail():
     link_id = request.form.get('link_id')
     email = request.form.get('email')
-    
+
     if not email:
         return "请输入邮箱"
-    
+
     email = email.strip()
     if '@' not in email:
         email = email + "@qq.com"
-    
-    # 验证链接
+
     links = load_links()
     if link_id not in links:
         return "链接无效"
-    
+
     link_data = links[link_id]
     if email not in link_data['emails']:
         return f"该邮箱不在本链接中，可查询的邮箱：{', '.join(link_data['emails'])}"
-    
-    # ===== 使用老系统的查询逻辑 =====
+
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
-    
+
     result = get_latest_mails(email, limit=10)
-    
+
     if isinstance(result, dict) and 'error' in result:
         return f"查询失败：{result['error']}"
-    
+
     if not result:
         return "<h3>📭 暂无邮件</h3>"
-    
+
     html_result = f"<h3>📧 {email} 的最新邮件</h3>"
     for mail in result:
         html_result += f"""
@@ -668,7 +622,7 @@ def get_groups():
     all_used = []
     for buyer, emails in used_data.get("records", {}).items():
         all_used.extend(emails)
-    
+
     types = ["数字", "英文", "foxmail"]
     result = []
     for t in types:
@@ -690,7 +644,7 @@ def test_login():
     data = request.get_json()
     email = data.get('email')
     auth = data.get('auth')
-    
+
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email, auth)
@@ -703,10 +657,11 @@ def test_login():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("邮箱查询系统启动")
+    print("邮箱查询系统启动（已适配闲管家对接）")
     print("=" * 60)
     print(f"已绑定 {len(ACCOUNTS)} 个邮箱")
     print("后台密码: 060910")
-    print("访问 http://127.0.0.1:5000")
+    print("健康检查: /api/health")
+    print("访问 http://127.0.0.1:8080")
     print("=" * 60)
     app.run(host='0.0.0.0', port=8080)
