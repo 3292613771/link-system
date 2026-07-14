@@ -657,7 +657,7 @@ def test_login():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("邮箱查询系统启动（已适配闲管家对接）")
+    print("邮箱查询系统启动")
     print("=" * 60)
     print(f"已绑定 {len(ACCOUNTS)} 个邮箱")
     print("后台密码: 060910")
