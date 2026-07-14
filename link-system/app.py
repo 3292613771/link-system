@@ -361,6 +361,67 @@ def login():
     </html>
     '''
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """闲管家连通性验证接口"""
+    return jsonify({"status": "ok", "code": 200, "msg": "服务运行正常"})
+
+@app.route('/api/auto_create_link', methods=['GET', 'POST'])
+def auto_create_link():
+    # 处理 GET 请求（闲管家验证连通性）
+    if request.method == 'GET':
+        return jsonify({"status": "ok", "code": 200, "msg": "API 可用"})
+
+    # 原有的 POST 处理逻辑（保持不变）
+    data = request.get_json()
+    type_name = data.get('type', '英文')
+    quantity = data.get('quantity', 1)
+    days = data.get('days', DEFAULT_DAYS)
+    buyer_id = data.get('buyer_id', str(uuid.uuid4())[:8])
+    
+    if quantity <= 0:
+        return jsonify({'error': '数量必须大于0'}), 400
+    
+    valid_types = ["数字", "英文", "foxmail"]
+    if type_name not in valid_types:
+        return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
+    
+    selected_emails, error = assign_emails(type_name, quantity, buyer_id)
+    if error:
+        return jsonify({'error': error}), 400
+    
+    link_id = str(uuid.uuid4())[:8]
+    links = load_links()
+    now = datetime.now()
+    
+    links[link_id] = {
+        'link_id': link_id,
+        'buyer_id': buyer_id,
+        'type': type_name,
+        'emails': selected_emails,
+        'quantity': quantity,
+        'created_at': now.strftime("%Y-%m-%d %H:%M:%S"),
+        'expire_at': (now + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
+        'status': 'active',
+        'query_count': 0
+    }
+    save_links(links)
+    
+    link_url = f"https://{DOMAIN}/query?link={link_id}"
+    
+    return jsonify({
+        "code": 200,
+        "msg": "success",
+        "data": {
+            "success": True,
+            "link_id": link_id,
+            "link_url": link_url,
+            "type": type_name,
+            "emails": selected_emails,
+            "quantity": quantity,
+            "expire_at": links[link_id]['expire_at']
+        }
+    })
 # ===== 路由 =====
 @app.route('/')
 def index():
