@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, redirect
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import random
 import imaplib
@@ -10,6 +10,14 @@ import re
 import html
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
+
+# ===== 时区设置（北京时间） =====
+os.environ['TZ'] = 'Asia/Shanghai'
+try:
+    import time
+    time.tzset()
+except:
+    pass
 
 app = Flask(__name__)
 
@@ -98,6 +106,7 @@ def save_links(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# ===== 邮件解析函数（老系统已验证） =====
 def decode_str(s):
     if not s:
         return ""
@@ -116,67 +125,76 @@ def decode_str(s):
         return str(s)
 
 
-def clean_html_to_text(html_text):
-    if not html_text:
-        return ""
-    text = re.sub(r'<style[^>]*>.*?</style>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'</?(div|p|tr|td|li|h[1-6])[^>]*>', '\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html.unescape(text)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    return text.strip()
-
-
 def get_mail_content(msg):
     content = ""
     try:
         if msg.is_multipart():
             for part in msg.walk():
-                content_type = part.get_content_type()
-                charset = part.get_content_charset() or 'utf-8'
-                
-                if content_type == "text/plain":
+                if part.get_content_type() == "text/plain":
                     payload = part.get_payload(decode=True)
                     if payload:
-                        try:
-                            content = payload.decode(charset, errors='replace')
-                            if content.strip():
-                                break
-                        except:
-                            content = payload.decode('utf-8', errors='replace')
-                            if content.strip():
-                                break
-                elif content_type == "text/html" and not content:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        try:
-                            html_text = payload.decode(charset, errors='replace')
-                            content = clean_html_to_text(html_text)
-                        except:
-                            html_text = payload.decode('utf-8', errors='replace')
-                            content = clean_html_to_text(html_text)
+                        content = payload.decode('utf-8', errors='replace')
+                        break
         else:
             payload = msg.get_payload(decode=True)
             if payload:
-                content_type = msg.get_content_type()
-                charset = msg.get_content_charset() or 'utf-8'
-                try:
-                    text = payload.decode(charset, errors='replace')
-                except:
-                    text = payload.decode('utf-8', errors='replace')
-                
-                if content_type == "text/html":
-                    content = clean_html_to_text(text)
-                else:
-                    content = text
+                content = payload.decode('utf-8', errors='replace')
     except:
         content = "解析失败"
-    return content.strip() or "无法解析邮件内容"
+    return content.strip()
 
 
+def get_latest_mails(email, auth_code, limit=10):
+    """获取最新 N 封邮件（不过滤时间）"""
+    try:
+        mail = imaplib.IMAP4_SSL("imap.qq.com")
+        mail.login(email, auth_code)
+        mail.select("INBOX")
+        status, data = mail.search(None, "ALL")
+        mail_ids = data[0].split() if data[0] else []
+        
+        if not mail_ids:
+            return []
+        
+        latest_ids = mail_ids[-limit:]
+        mails = []
+        for mail_id in reversed(latest_ids):
+            try:
+                _, msg_data = mail.fetch(mail_id, "(RFC822)")
+                for part in msg_data:
+                    if isinstance(part, tuple):
+                        msg = email.message_from_bytes(part[1])
+                        
+                        date_str = msg.get("Date", "")
+                        mail_time = ""
+                        try:
+                            if date_str:
+                                dt = parsedate_to_datetime(date_str)
+                                mail_time = dt.strftime("%Y-%m-%d %H:%M")
+                        except:
+                            mail_time = "时间未知"
+                        
+                        subject = decode_str(msg.get("Subject", "无主题"))
+                        sender = decode_str(msg.get("From", "未知发件人"))
+                        content = get_mail_content(msg)
+                        
+                        mails.append({
+                            'sender': sender,
+                            'subject': subject,
+                            'content': content,
+                            'time': mail_time
+                        })
+                        break
+            except:
+                continue
+        mail.close()
+        mail.logout()
+        return mails
+    except Exception as e:
+        return {'error': str(e)}
+
+
+# ===== 分配邮箱 =====
 def assign_emails(type_name, quantity, buyer_id):
     auth_map = get_auth_map()
     all_emails = list(auth_map.keys())
@@ -202,6 +220,7 @@ def assign_emails(type_name, quantity, buyer_id):
     return selected, None
 
 
+# ===== 路由 =====
 @app.route('/')
 def index():
     return redirect('/admin')
@@ -383,10 +402,6 @@ def admin_create_link():
     '''
 
 
-# =====================================================
-# 测试版查询页面：显示最新10封邮件，2000字
-# 测试完成后改为只显示购买日期之后的邮件
-# =====================================================
 @app.route('/query')
 def query_page():
     link_id = request.args.get('link')
@@ -407,89 +422,21 @@ def query_page():
     if link_data['status'] != 'active':
         return "⛔ 链接已被禁用"
     
-    emails = link_data['emails']
-    auth_map = get_auth_map()
-    
-    all_results = ""
-    for email in emails:
-        auth_code = auth_map.get(email)
-        if not auth_code:
-            all_results += f"<p>❌ {email}：授权码不存在</p>"
-            continue
-        
-        try:
-            mail = imaplib.IMAP4_SSL("imap.qq.com")
-            mail.login(email, auth_code)
-            mail.select("INBOX")
-            status, data = mail.search(None, "ALL")
-            mail_ids = data[0].split() if data[0] else []
-            
-            if not mail_ids:
-                all_results += f"<p>📭 {email}：暂无邮件</p>"
-                mail.close()
-                mail.logout()
-                continue
-            
-            # 显示最新10封邮件
-            latest_ids = mail_ids[-10:]
-            all_results += f"<h3>📧 {email}</h3>"
-            email_count = 0
-            
-            for mail_id in reversed(latest_ids):
-                try:
-                    _, msg_data = mail.fetch(mail_id, "(RFC822)")
-                    for part in msg_data:
-                        if isinstance(part, tuple):
-                            msg = email.message_from_bytes(part[1])
-                            
-                            # 获取邮件发送时间
-                            date_str = msg.get("Date", "")
-                            mail_time = ""
-                            try:
-                                if date_str:
-                                    dt = parsedate_to_datetime(date_str)
-                                    mail_time = dt.strftime("%Y-%m-%d %H:%M")
-                            except:
-                                mail_time = "时间未知"
-                            
-                            subject = decode_str(msg.get("Subject", "无主题"))
-                            sender = decode_str(msg.get("From", "未知发件人"))
-                            content = get_mail_content(msg)
-                            
-                            # 显示2000字
-                            content_display = content[:2000]
-                            if len(content) > 2000:
-                                content_display += "..."
-                            
-                            all_results += f"""
-                            <div style="border-bottom:1px solid #ddd;padding:10px;">
-                                <b>{sender}</b>  <span style="color:#999;font-size:12px;">{mail_time}</span><br>
-                                <span style="color:#666;">{subject}</span><br>
-                                <span style="font-size:14px;">{content_display}</span>
-                            </div>
-                            """
-                            email_count += 1
-                            break
-                except:
-                    continue
-            
-            if email_count == 0:
-                all_results += f"<p>📭 {email}：暂无邮件</p>"
-            
-            mail.close()
-            mail.logout()
-        except Exception as e:
-            all_results += f"<p>❌ {email}：查询失败 - {str(e)}</p>"
-    
     html_content = f'''
     <!DOCTYPE html>
     <html>
     <head><meta charset="UTF-8"><title>邮箱查询系统</title></head>
-    <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px;">
-        <h2>📬 您的邮箱邮件</h2>
-        <p style="color:#999;">有效期至：{link_data['expire_at']}</p>
-        <hr>
-        {all_results}
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <h2>📬 邮箱查询系统</h2>
+            <p>输入已绑定的邮箱，查看最新邮件</p>
+            <p style="color: #999; font-size: 13px;">有效期至：{link_data['expire_at']}</p>
+            <form action="/api/query_mail" method="post">
+                <input type="hidden" name="link_id" value="{link_id}">
+                <input type="text" name="email" placeholder="请输入邮箱地址" style="width:100%;padding:12px;font-size:16px;margin:10px 0;border:2px solid #ddd;border-radius:8px;">
+                <button type="submit" style="width:100%;padding:12px;background:#4CAF50;color:white;border:none;font-size:16px;cursor:pointer;border-radius:8px;">查询邮件</button>
+            </form>
+        </div>
     </body>
     </html>
     '''
@@ -521,38 +468,24 @@ def query_mail():
     if not auth_code:
         return f"邮箱 {email} 的授权码不存在"
     
-    try:
-        mail = imaplib.IMAP4_SSL("imap.qq.com")
-        mail.login(email, auth_code)
-        mail.select("INBOX")
-        status, data = mail.search(None, "ALL")
-        mail_ids = data[0].split() if data[0] else []
-        
-        if not mail_ids:
-            return "<h3>📭 暂无邮件</h3>"
-        
-        latest_ids = mail_ids[-10:]
-        html_result = f"<h3>📧 {email} 的最新邮件</h3>"
-        for mid in reversed(latest_ids):
-            _, msg_data = mail.fetch(mid, "(RFC822)")
-            for part in msg_data:
-                if isinstance(part, tuple):
-                    msg = email.message_from_bytes(part[1])
-                    subject = decode_str(msg.get("Subject", "无主题"))
-                    sender = decode_str(msg.get("From", "未知发件人"))
-                    content = get_mail_content(msg)
-                    html_result += f"""
-                    <div style="border-bottom:1px solid #ddd;padding:10px;">
-                        <b>{sender}</b><br>
-                        <span style="color:#666;">{subject}</span><br>
-                        <span style="font-size:14px;">{content[:2000]}</span>
-                    </div>
-                    """
-        mail.close()
-        mail.logout()
-        return html_result
-    except Exception as e:
-        return f"查询失败：{str(e)}"
+    result = get_latest_mails(email, auth_code, limit=10)
+    
+    if isinstance(result, dict) and 'error' in result:
+        return f"查询失败：{result['error']}"
+    
+    if not result:
+        return "<h3>📭 暂无邮件</h3>"
+    
+    html_result = f"<h3>📧 {email} 的最新邮件</h3>"
+    for mail in result:
+        html_result += f"""
+        <div style="border-bottom:1px solid #ddd;padding:10px;">
+            <b>{mail['sender']}</b>  <span style="color:#999;font-size:12px;">{mail.get('time', '')}</span><br>
+            <span style="color:#666;">{mail['subject']}</span><br>
+            <span style="font-size:14px;">{mail['content'][:2000]}</span>
+        </div>
+        """
+    return html_result
 
 
 if __name__ == '__main__':
