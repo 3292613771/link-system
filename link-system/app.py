@@ -1,23 +1,13 @@
 from flask import Flask, request, jsonify, redirect
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import os
 import random
 import imaplib
 import email
-import re
-import html
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
-
-# ===== 时区设置（北京时间） =====
-os.environ['TZ'] = 'Asia/Shanghai'
-try:
-    import time
-    time.tzset()
-except:
-    pass
 
 app = Flask(__name__)
 
@@ -106,7 +96,7 @@ def save_links(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# ===== 邮件解析函数（老系统已验证） =====
+# ===== 老系统的邮件查询逻辑（只改这里） =====
 def decode_str(s):
     if not s:
         return ""
@@ -145,7 +135,7 @@ def get_mail_content(msg):
 
 
 def get_latest_mails(email, auth_code, limit=10):
-    """获取最新 N 封邮件（不过滤时间）"""
+    """老系统的邮件获取逻辑"""
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email, auth_code)
@@ -220,7 +210,7 @@ def assign_emails(type_name, quantity, buyer_id):
     return selected, None
 
 
-# ===== 路由 =====
+# ===== 路由（其他全部保持不变） =====
 @app.route('/')
 def index():
     return redirect('/admin')
@@ -468,6 +458,7 @@ def query_mail():
     if not auth_code:
         return f"邮箱 {email} 的授权码不存在"
     
+    # 使用老系统的查询逻辑
     result = get_latest_mails(email, auth_code, limit=10)
     
     if isinstance(result, dict) and 'error' in result:
