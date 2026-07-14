@@ -1,3 +1,11 @@
+import os
+os.environ['TZ'] = 'Asia/Shanghai'
+try:
+    import time
+    time.tzset()
+except:
+    pass
+    
 from flask import Flask, request, jsonify, redirect, session, send_from_directory
 import imaplib
 import email
