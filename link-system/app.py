@@ -511,12 +511,6 @@ def auto_create_link():
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
     
-    # 纯文本格式
-    return f"""您购买的邮箱已发货
-
-邮箱：{selected_emails[0]}
-查询链接：{link_url}
-有效期至：{links[link_id]['expire_at']}"""
 @app.route('/query')
 def query_page():
     link_id = request.args.get('link')
