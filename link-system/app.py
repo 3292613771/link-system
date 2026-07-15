@@ -426,6 +426,15 @@ def auto_create_link():
         }
     })
 
+@app.route('/agisoAcrSupplierApi/app/getAppId', methods=['POST'])
+def get_app_id():
+    return jsonify({
+        "code": 200,
+        "msg": "success",
+        "data": {
+            "appId": "1669765814257093"
+        }
+    })
 # ===== 页面路由 =====
 @app.route('/')
 def index():
