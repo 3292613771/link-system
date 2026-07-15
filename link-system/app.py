@@ -511,9 +511,17 @@ def auto_create_link():
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
 
+        if len(selected_emails) == 1:
         return f"""您购买的邮箱已发货
 
-邮箱：
+邮箱：{selected_emails[0]}
+
+查询链接：{link_url}
+有效期至：{links[link_id]['expire_at']}"""
+    else:
+        return f"""您购买的邮箱已发货
+
+邮箱列表：
 {chr(10).join(selected_emails)}
 
 查询链接：{link_url}
