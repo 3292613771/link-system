@@ -470,27 +470,28 @@ def admin_create_link():
 @app.route('/api/auto_create_link', methods=['POST'])
 def auto_create_link():
     data = request.get_json() or {}
-
-type_name = data.get("type", "英文")
-
-try:
-    quantity = int(data.get("quantity", 1))
-    days = int(data.get("days", DEFAULT_DAYS))
-except (TypeError, ValueError):
-    return jsonify({"error": "quantity 和 days 必须为整数"}), 400
-
-buyer_id = str(data.get("buyer_id") or str(uuid.uuid4())[:8])
     
+    type_name = data.get("type", "英文")
+    
+    try:
+        quantity = int(data.get("quantity", 1))
+        days = int(data.get("days", DEFAULT_DAYS))
+    except (TypeError, ValueError):
+        return jsonify({"error": "quantity 和 days 必须为整数"}), 400
+    
+    buyer_id = str(data.get("buyer_id") or str(uuid.uuid4())[:8])
+    
+    # 校验数量
     if quantity <= 0:
-        return jsonify({'error': '数量必须大于0'}), 400
+        return jsonify({"error": "数量必须大于0"}), 400
     
     valid_types = ["数字", "英文", "foxmail"]
     if type_name not in valid_types:
-        return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
+        return jsonify({"error": f"无效类型，请选择: {', '.join(valid_types)}"}), 400
     
     selected_emails, error = assign_emails(type_name, quantity, buyer_id)
     if error:
-        return jsonify({'error': error}), 400
+        return jsonify({"error": error}), 400
     
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
