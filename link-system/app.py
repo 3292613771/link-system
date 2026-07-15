@@ -6,7 +6,7 @@ try:
 except:
     pass
 
-from flask import Flask, request, jsonify, redirect, session
+from flask import Flask, request, jsonify, redirect, session, send_from_directory
 import imaplib
 import email
 import re
@@ -24,7 +24,6 @@ app.secret_key = 'your-secret-key-here'
 # ===== 配置文件 =====
 LINKS_FILE = "links.json"
 ACCOUNTS_FILE = "accounts.txt"
-USED_EMAILS_FILE = "used_emails.json"
 ADMIN_PASSWORD = "060910"
 DEFAULT_DAYS = 30
 DOMAIN = "mail-auto.zeabur.app"
@@ -82,17 +81,6 @@ def save_links(data):
     with open(LINKS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def load_used_emails():
-    try:
-        with open(USED_EMAILS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {"records": {}}
-
-def save_used_emails(data):
-    with open(USED_EMAILS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
 
 # ===== 判断邮箱类型 =====
 def detect_email_type(email):
@@ -104,41 +92,18 @@ def detect_email_type(email):
     return "英文"
 
 
-# ===== 分配邮箱（含备注） =====
-def assign_emails(type_name, quantity, remark):
+# ===== 分配邮箱 =====
+def assign_emails(type_name, quantity):
     all_emails = list(ACCOUNTS.keys())
     type_emails = [e for e in all_emails if detect_email_type(e) == type_name]
     
     if not type_emails:
         return None, f"类型 '{type_name}' 没有可用邮箱"
     
-    used_data = load_used_emails()
+    if len(type_emails) < quantity:
+        return None, f"库存不足！需要 {quantity} 个，只剩 {len(type_emails)} 个"
     
-    if "records" not in used_data or not isinstance(used_data["records"], dict):
-        used_data = {"records": {}}
-        save_used_emails(used_data)
-        print("已重置 used_emails.json")
-    
-    if not remark:
-        remark = "default"
-    
-    used_in_remark = used_data.get("records", {}).get(remark, [])
-    
-    if not isinstance(used_in_remark, list):
-        used_in_remark = []
-    
-    available = [e for e in type_emails if e not in used_in_remark]
-    
-    if len(available) < quantity:
-        return None, f"库存不足！需要 {quantity} 个，该备注下只剩 {len(available)} 个"
-    
-    selected = random.sample(available, quantity)
-    
-    if remark not in used_data["records"]:
-        used_data["records"][remark] = []
-    used_data["records"][remark].extend(selected)
-    save_used_emails(used_data)
-    
+    selected = random.sample(type_emails, quantity)
     return selected, None
 
 
@@ -188,54 +153,18 @@ def get_latest_mails(email_addr, limit=10):
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
+        mail.select("INBOX")
+        status, data = mail.search(None, "ALL")
+        mail_ids = data[0].split() if data[0] else []
         
-        all_mail_ids = []
-        folder_info = []
-        
-        try:
-            mail.select("INBOX")
-            status, data = mail.search(None, "ALL")
-            if data[0]:
-                for mid in data[0].split():
-                    all_mail_ids.append(mid)
-                    folder_info.append("INBOX")
-        except:
-            pass
-        
-        spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
-        for folder in spam_folders:
-            try:
-                mail.select(folder)
-                status, data = mail.search(None, "ALL")
-                if data[0]:
-                    for mid in data[0].split():
-                        all_mail_ids.append(mid)
-                        folder_info.append(folder)
-                break
-            except:
-                continue
-        
-        if not all_mail_ids:
+        if not mail_ids:
             return []
         
-        seen = set()
-        unique_ids = []
-        unique_folders = []
-        for mid, folder in zip(all_mail_ids, folder_info):
-            mid_str = mid.decode() if isinstance(mid, bytes) else str(mid)
-            if mid_str not in seen:
-                seen.add(mid_str)
-                unique_ids.append(mid)
-                unique_folders.append(folder)
-        
-        sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
-        latest_pairs = sorted_pairs[-limit:]
-        
+        latest_ids = mail_ids[-limit:]
         mails = []
-        for mail_id, folder in reversed(latest_pairs):
+        for mail_id in reversed(latest_ids):
             try:
                 mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
-                mail.select(folder)
                 _, msg_data = mail.fetch(mail_id, "(RFC822)")
                 for part in msg_data:
                     if isinstance(part, tuple):
@@ -319,14 +248,7 @@ def admin():
         return redirect('/login')
     
     links = load_links()
-    used_data = load_used_emails()
     all_emails = list(ACCOUNTS.keys())
-    
-    total = len(all_emails)
-    all_used = []
-    for remark, emails in used_data.get("records", {}).items():
-        all_used.extend(emails)
-    used = len(set(all_used))
     
     link_list = ""
     for link_id, data in links.items():
@@ -334,7 +256,7 @@ def admin():
         link_list += f"""
         <tr>
             <td>{link_id}</td>
-            <td>{data.get('remark', data.get('buyer_id', '未知'))}</td>
+            <td>{data.get('buyer_id', '未知')}</td>
             <td>{data.get('type', '未知')}</td>
             <td>{len(data['emails'])}</td>
             <td>{data['created_at']}</td>
@@ -358,8 +280,7 @@ def admin():
             .row {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }}
             .field {{ display: flex; flex-direction: column; }}
             .field label {{ font-size: 13px; color: #666; margin-bottom: 4px; }}
-            .field input, .field select, .field textarea {{ padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; }}
-            .field input:focus, .field select:focus, .field textarea:focus {{ border-color: #667eea; outline: none; }}
+            .field input, .field select {{ padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; min-width: 120px; }}
             .btn {{ padding: 10px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: bold; }}
             .btn:hover {{ background: #45a049; }}
             .btn-blue {{ background: #667eea; }}
@@ -384,14 +305,12 @@ def admin():
         <div class="card">
             <h2>邮箱管理后台 <a href="/logout" class="logout">退出</a></h2>
             <div class="stats">
-                <span>总邮箱：<strong>{total}</strong></span>
-                <span>已分配：<strong>{used}</strong></span>
-                <span>可用：<strong>{total - used}</strong></span>
+                <span>总邮箱：<strong>{len(all_emails)}</strong></span>
             </div>
         </div>
 
         <div class="card">
-            <h2>批量生成（从库存随机抽取）</h2>
+            <h2>生成邮箱链接</h2>
             <div class="row">
                 <div class="field">
                     <label>邮箱种类</label>
@@ -409,10 +328,6 @@ def admin():
                     <label>有效期（天）</label>
                     <input type="number" id="emailDays" value="30" min="1" max="365">
                 </div>
-                <div class="field">
-                    <label>备注（客户名称/批次号）</label>
-                    <input type="text" id="remarkInput" placeholder="例如：客户A_20260715" style="min-width:150px;">
-                </div>
                 <button class="btn" onclick="generateLinks()">生成链接</button>
             </div>
             <div class="result-box" id="resultBox">
@@ -423,21 +338,17 @@ def admin():
         <hr class="separator">
 
         <div class="card">
-            <h2>输入邮箱生成链接（手动指定邮箱）</h2>
+            <h2>输入邮箱生成链接</h2>
             <div class="row">
                 <div class="field">
-                    <label>输入邮箱（每行一个）</label>
-                    <textarea id="manualEmails" placeholder="123456789@qq.com&#10;987654321@qq.com&#10;111222333@qq.com" rows="4" style="min-width:300px;font-family:monospace;"></textarea>
+                    <label>输入邮箱</label>
+                    <input type="text" id="manualEmail" placeholder="例如：123456789@qq.com" style="min-width:250px;">
                 </div>
                 <div class="field">
                     <label>有效期（天）</label>
                     <input type="number" id="manualDays" value="30" min="1" max="365">
                 </div>
-                <div class="field">
-                    <label>备注（客户名称/批次号）</label>
-                    <input type="text" id="manualRemark" placeholder="例如：客户B_20260715" style="min-width:150px;">
-                </div>
-                <button class="btn btn-blue" onclick="generateManualLinks()">生成链接</button>
+                <button class="btn btn-blue" onclick="generateManualLink()">生成链接</button>
             </div>
             <div class="result-box" id="manualResultBox">
                 <div id="manualResultContent"></div>
@@ -448,7 +359,7 @@ def admin():
             <h2>已生成的链接</h2>
             <div style="overflow-x:auto;">
                 <table>
-                    <tr><th>链接ID</th><th>备注</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr>
+                    <tr><th>链接ID</th><th>买家</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr>
                     {link_list if link_list else '<tr><td colspan="7">暂无链接</td></tr>'}
                 </table>
             </div>
@@ -460,7 +371,6 @@ def admin():
             const type = document.getElementById('emailType').value;
             const quantity = parseInt(document.getElementById('emailCount').value);
             const days = parseInt(document.getElementById('emailDays').value);
-            const remark = document.getElementById('remarkInput').value.trim();
 
             if (!quantity || quantity < 1) {{
                 alert('请输入有效数量');
@@ -480,7 +390,7 @@ def admin():
                         type: type,
                         quantity: quantity,
                         days: days,
-                        remark: remark
+                        buyer_id: '手动生成'
                     }})
                 }});
                 const data = await res.json();
@@ -491,7 +401,6 @@ def admin():
                 }}
 
                 let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
-                html += '<div style="margin-bottom:8px;">备注：' + (data.remark || '无') + '</div>';
                 html += '<div style="margin-bottom:8px;">邮箱列表：</div>';
                 data.emails.forEach((email, idx) => {{
                     html += '<div class="email-item">' + (idx+1) + '. ' + email + '</div>';
@@ -499,7 +408,7 @@ def admin():
                 html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
                 html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
                 html += '<div style="margin-top:8px;color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
-                html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\', \'' + (data.remark || '') + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
+                html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
 
                 resultContent.innerHTML = html;
                 location.reload();
@@ -509,19 +418,12 @@ def admin():
             }}
         }}
 
-        async function generateManualLinks() {{
-            const emailsText = document.getElementById('manualEmails').value.trim();
+        async function generateManualLink() {{
+            const email = document.getElementById('manualEmail').value.trim();
             const days = parseInt(document.getElementById('manualDays').value) || 30;
-            const remark = document.getElementById('manualRemark').value.trim();
 
-            if (!emailsText) {{
+            if (!email) {{
                 alert('请输入邮箱地址');
-                return;
-            }}
-
-            const emails = emailsText.split('\\n').map(e => e.trim()).filter(e => e);
-            if (emails.length === 0) {{
-                alert('请输入有效邮箱地址');
                 return;
             }}
 
@@ -535,9 +437,8 @@ def admin():
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
-                        emails: emails,
-                        days: days,
-                        remark: remark
+                        emails: [email],
+                        days: days
                     }})
                 }});
                 const data = await res.json();
@@ -548,15 +449,10 @@ def admin():
                 }}
 
                 let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
-                html += '<div style="margin-bottom:8px;">备注：' + (data.remark || '无') + '</div>';
-                html += '<div style="margin-bottom:8px;">邮箱列表：</div>';
-                data.emails.forEach((email, idx) => {{
-                    html += '<div class="email-item">' + (idx+1) + '. ' + email + '</div>';
-                }});
                 html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
                 html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
-                html += '<div style="margin-top:8px;color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
-                html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\', \'' + (data.remark || '') + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
+                html += '<div style="margin-top:8px;color:#999;font-size:13px;">邮箱：' + email + '</div>';
+                html += '<div style="color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
 
                 resultContent.innerHTML = html;
                 location.reload();
@@ -572,8 +468,8 @@ def admin():
             }});
         }}
 
-        function copyAll(emails, link, remark) {{
-            const text = '备注：' + remark + '\\n邮箱：' + emails.replace(/,/g, '、') + '\\n查询链接：' + link;
+        function copyAll(emails, link) {{
+            const text = '邮箱：' + emails.replace(/,/g, '、') + '\\n查询链接：' + link;
             navigator.clipboard.writeText(text).then(() => {{
                 alert('已复制全部内容');
             }});
@@ -592,10 +488,7 @@ def auto_create_link():
     type_name = data.get('type', '英文')
     quantity = data.get('quantity', 1)
     days = data.get('days', DEFAULT_DAYS)
-    remark = data.get('remark', '')
-    
-    if not remark:
-        remark = f"生成_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    buyer_id = data.get('buyer_id', str(uuid.uuid4())[:8])
     
     if quantity <= 0:
         return jsonify({'error': '数量必须大于0'}), 400
@@ -604,7 +497,7 @@ def auto_create_link():
     if type_name not in valid_types:
         return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
     
-    selected_emails, error = assign_emails(type_name, quantity, remark)
+    selected_emails, error = assign_emails(type_name, quantity)
     if error:
         return jsonify({'error': error}), 400
     
@@ -614,8 +507,7 @@ def auto_create_link():
     
     links[link_id] = {
         'link_id': link_id,
-        'buyer_id': remark,
-        'remark': remark,
+        'buyer_id': buyer_id,
         'type': type_name,
         'emails': selected_emails,
         'quantity': quantity,
@@ -635,7 +527,6 @@ def auto_create_link():
         'type': type_name,
         'emails': selected_emails,
         'quantity': quantity,
-        'remark': remark,
         'expire_at': links[link_id]['expire_at']
     })
 
@@ -645,13 +536,9 @@ def admin_create_link_manual():
     data = request.get_json()
     emails = data.get('emails', [])
     days = data.get('days', 30)
-    remark = data.get('remark', '')
     
     if not emails:
         return jsonify({'error': '请提供邮箱'})
-    
-    if not remark:
-        remark = f"手动_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
@@ -659,8 +546,7 @@ def admin_create_link_manual():
     
     links[link_id] = {
         'link_id': link_id,
-        'buyer_id': remark,
-        'remark': remark,
+        'buyer_id': '手动生成',
         'type': '手动',
         'emails': emails,
         'quantity': len(emails),
@@ -677,8 +563,6 @@ def admin_create_link_manual():
         'success': True,
         'link_id': link_id,
         'link_url': link_url,
-        'emails': emails,
-        'remark': remark,
         'expire_at': links[link_id]['expire_at']
     })
 
@@ -771,20 +655,14 @@ def query_mail():
 @app.route('/api/groups', methods=['GET'])
 def get_groups():
     all_emails = list(ACCOUNTS.keys())
-    used_data = load_used_emails()
-    all_used = []
-    for remark, emails in used_data.get("records", {}).items():
-        all_used.extend(emails)
-    
     types = ["数字", "英文", "foxmail"]
     result = []
     for t in types:
         type_emails = [e for e in all_emails if detect_email_type(e) == t]
-        available = len([e for e in type_emails if e not in all_used])
         result.append({
             "name": t,
             "total": len(type_emails),
-            "available": available
+            "available": len(type_emails)
         })
     return jsonify(result)
 
