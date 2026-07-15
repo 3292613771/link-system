@@ -436,14 +436,12 @@ def get_app_id():
         }
     })
 
-@app.route('/goofish/open/Info', methods=['POST'])
+@app.route('/goofish/open/info', methods=['POST'])
 def goofish_open_info():
     return jsonify({
         "code": 200,
         "msg": "success",
-        "data": {
-            "tech_id": "1669765814257093"
-        }
+        "data": {}
     })
 # ===== 页面路由 =====
 @app.route('/')
