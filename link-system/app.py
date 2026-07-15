@@ -11,6 +11,7 @@ import imaplib
 import email
 import re
 import html
+import os
 import json
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
@@ -24,12 +25,12 @@ app.secret_key = 'your-secret-key-here'
 # ===== 配置文件 =====
 LINKS_FILE = "links.json"
 ACCOUNTS_FILE = "accounts.txt"
+USED_EMAILS_FILE = "used_emails.json"
 ADMIN_PASSWORD = "060910"
 DEFAULT_DAYS = 30
 DOMAIN = "mail-auto.zeabur.app"
 
-
-# ===== 读取账号 =====
+# ===== 老系统的账号读取逻辑 =====
 def load_accounts():
     accounts = {}
     try:
@@ -38,6 +39,7 @@ def load_accounts():
                 line = line.strip()
                 if not line:
                     continue
+                
                 if "----" in line:
                     parts = line.split("----")
                     if len(parts) == 2:
@@ -68,46 +70,10 @@ def load_accounts():
 ACCOUNTS = load_accounts()
 print(f"已加载 {len(ACCOUNTS)} 个绑定邮箱")
 
+def get_auth_map():
+    return ACCOUNTS
 
-# ===== 数据读写 =====
-def load_links():
-    try:
-        with open(LINKS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_links(data):
-    with open(LINKS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-# ===== 判断邮箱类型 =====
-def detect_email_type(email):
-    if email.endswith("@foxmail.com"):
-        return "foxmail"
-    username = email.split("@")[0]
-    if username.isdigit():
-        return "数字"
-    return "英文"
-
-
-# ===== 分配邮箱 =====
-def assign_emails(type_name, quantity):
-    all_emails = list(ACCOUNTS.keys())
-    type_emails = [e for e in all_emails if detect_email_type(e) == type_name]
-    
-    if not type_emails:
-        return None, f"类型 '{type_name}' 没有可用邮箱"
-    
-    if len(type_emails) < quantity:
-        return None, f"库存不足！需要 {quantity} 个，只剩 {len(type_emails)} 个"
-    
-    selected = random.sample(type_emails, quantity)
-    return selected, None
-
-
-# ===== 查询邮件 =====
+# ===== 老系统的邮件解析函数 =====
 def decode_str(s):
     if not s:
         return ""
@@ -125,23 +91,84 @@ def decode_str(s):
     except:
         return str(s)
 
+def clean_html_to_text(html_text):
+    if not html_text:
+        return ""
+    text = re.sub(r'<style[^>]*>.*?</style>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?(div|p|tr|td|li|h[1-6])[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    return text.strip()
+
 def get_mail_content(msg):
+    import re
+    import html
+    
     content = ""
+    
     try:
+        all_parts = []
         if msg.is_multipart():
             for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        content = payload.decode('utf-8', errors='replace')
-                        break
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or 'utf-8'
+                    try:
+                        text = payload.decode(charset, errors='replace')
+                    except:
+                        text = payload.decode('utf-8', errors='replace')
+                    if text.strip():
+                        all_parts.append((part.get_content_type(), text))
         else:
             payload = msg.get_payload(decode=True)
             if payload:
-                content = payload.decode('utf-8', errors='replace')
-    except:
-        content = "解析失败"
-    return content.strip()
+                charset = msg.get_content_charset() or 'utf-8'
+                try:
+                    text = payload.decode(charset, errors='replace')
+                except:
+                    text = payload.decode('utf-8', errors='replace')
+                if text.strip():
+                    all_parts.append((msg.get_content_type(), text))
+        
+        for content_type, text in all_parts:
+            if content_type == "text/plain":
+                content = text.strip()
+                break
+        
+        if not content:
+            for content_type, text in all_parts:
+                if content_type == "text/html":
+                    content = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+                    content = re.sub(r'<[^>]+>', ' ', content)
+                    content = html.unescape(content)
+                    content = re.sub(r'\s+', ' ', content)
+                    content = content.strip()
+                    break
+        
+        if not content:
+            return "无法解析邮件内容"
+        
+        code = None
+        match = re.search(r'(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)\s*(\d)', content)
+        if match:
+            code = match.group(1)+match.group(2)+match.group(3)+match.group(4)+match.group(5)+match.group(6)
+        if not code:
+            match = re.search(r'\b(\d{6})\b', content)
+            if match:
+                code = match.group(1)
+        
+        content = content[:1000]
+        
+        if code:
+            return f"验证码：{code}\n\n{content}"
+        return content
+        
+    except Exception as e:
+        return f"解析失败"
 
 def get_latest_mails(email_addr, limit=10):
     if email_addr not in ACCOUNTS:
@@ -153,25 +180,68 @@ def get_latest_mails(email_addr, limit=10):
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
-        mail.select("INBOX")
-        status, data = mail.search(None, "ALL")
-        mail_ids = data[0].split() if data[0] else []
         
-        if not mail_ids:
+        all_mail_ids = []
+        folder_info = []
+        
+        # 读取收件箱
+        try:
+            mail.select("INBOX")
+            status, data = mail.search(None, "ALL")
+            if data[0]:
+                for mid in data[0].split():
+                    all_mail_ids.append(mid)
+                    folder_info.append("INBOX")
+        except Exception as e:
+            print(f"读取收件箱失败: {e}")
+        
+        # 读取垃圾箱
+        spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
+        for folder in spam_folders:
+            try:
+                mail.select(folder)
+                status, data = mail.search(None, "ALL")
+                if data[0]:
+                    for mid in data[0].split():
+                        all_mail_ids.append(mid)
+                        folder_info.append(folder)
+                break
+            except:
+                continue
+        
+        if not all_mail_ids:
             return []
         
-        latest_ids = mail_ids[-limit:]
+        seen = set()
+        unique_ids = []
+        unique_folders = []
+        for mid, folder in zip(all_mail_ids, folder_info):
+            mid_str = mid.decode() if isinstance(mid, bytes) else str(mid)
+            if mid_str not in seen:
+                seen.add(mid_str)
+                unique_ids.append(mid)
+                unique_folders.append(folder)
+        
+        sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
+        latest_pairs = sorted_pairs[-limit:]
+        
         mails = []
-        for mail_id in reversed(latest_ids):
+        
+        for mail_id, folder in reversed(latest_pairs):
             try:
                 mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
+                
+                mail.select(folder)
                 _, msg_data = mail.fetch(mail_id, "(RFC822)")
+                
                 for part in msg_data:
                     if isinstance(part, tuple):
                         msg = email.message_from_bytes(part[1])
+                        
                         date_str = msg.get("Date", "")
                         send_time = ""
                         try:
+                            from email.utils import parsedate_to_datetime
                             if date_str:
                                 dt = parsedate_to_datetime(date_str)
                                 send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -180,6 +250,7 @@ def get_latest_mails(email_addr, limit=10):
                         subject = decode_str(msg.get("Subject", "无主题"))
                         sender = decode_str(msg.get("From", "未知发件人"))
                         content = get_mail_content(msg)
+                        
                         mails.append({
                             'mail_id': mail_id_str,
                             'sender': sender,
@@ -188,13 +259,15 @@ def get_latest_mails(email_addr, limit=10):
                             'time': send_time
                         })
                         break
-            except:
+            except Exception as e:
+                print(f"读取单封邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
                 continue
         
         return mails
         
     except Exception as e:
         return {'error': f'连接失败：{str(e)}'}
+    
     finally:
         if mail:
             try:
@@ -206,12 +279,61 @@ def get_latest_mails(email_addr, limit=10):
             except:
                 pass
 
+# ===== 链接管理函数 =====
+def load_links():
+    try:
+        with open(LINKS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
 
-# ===== 路由 =====
-@app.route('/')
-def index():
-    return redirect('/admin')
+def save_links(data):
+    with open(LINKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_used_emails():
+    try:
+        with open(USED_EMAILS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"records": {}}
+
+def save_used_emails(data):
+    with open(USED_EMAILS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def detect_email_type(email):
+    if email.endswith("@foxmail.com"):
+        return "foxmail"
+    username = email.split("@")[0]
+    if username.isdigit():
+        return "数字"
+    return "英文"
+
+def assign_emails(type_name, quantity, buyer_id):
+    all_emails = list(ACCOUNTS.keys())
+    type_emails = [e for e in all_emails if detect_email_type(e) == type_name]
+    
+    if not type_emails:
+        return None, f"类型 '{type_name}' 没有可用邮箱"
+    
+    used_data = load_used_emails()
+    buyer_used = used_data.get("records", {}).get(buyer_id, [])
+    available = [e for e in type_emails if e not in buyer_used]
+    
+    if len(available) < quantity:
+        return None, f"类型 '{type_name}' 库存不足！需要 {quantity} 个，该买家还能领 {len(available)} 个"
+    
+    selected = random.sample(available, quantity)
+    
+    if buyer_id not in used_data["records"]:
+        used_data["records"][buyer_id] = []
+    used_data["records"][buyer_id].extend(selected)
+    save_used_emails(used_data)
+    
+    return selected, None
+
+# ===== 登录页面 =====
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -220,14 +342,17 @@ def login():
             session['logged_in'] = True
             return redirect('/admin')
         else:
-            return '<h2>密码错误</h2><p><a href="/login">重新输入</a></p>'
+            return '''
+            <h2>密码错误</h2>
+            <p><a href="/login">重新输入</a></p>
+            '''
     
     return '''
     <!DOCTYPE html>
     <html>
     <head><meta charset="UTF-8"><title>后台登录</title></head>
     <body style="font-family: Arial; max-width: 400px; margin: 100px auto; padding: 20px;">
-        <h2>后台登录</h2>
+        <h2>🔐 后台登录</h2>
         <form method="post">
             <input type="password" name="password" placeholder="请输入密码" style="width:100%;padding:12px;font-size:16px;margin:10px 0;border:2px solid #ddd;border-radius:8px;">
             <button type="submit" style="width:100%;padding:12px;background:#4CAF50;color:white;border:none;font-size:16px;cursor:pointer;border-radius:8px;">登录</button>
@@ -236,11 +361,10 @@ def login():
     </html>
     '''
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect('/login')
-
+# ===== 路由 =====
+@app.route('/')
+def index():
+    return redirect('/admin')
 
 @app.route('/admin')
 def admin():
@@ -248,11 +372,18 @@ def admin():
         return redirect('/login')
     
     links = load_links()
+    used_data = load_used_emails()
     all_emails = list(ACCOUNTS.keys())
+    
+    total = len(all_emails)
+    all_used = []
+    for buyer, emails in used_data.get("records", {}).items():
+        all_used.extend(emails)
+    used = len(set(all_used))
     
     link_list = ""
     for link_id, data in links.items():
-        status = '有效' if data['status'] == 'active' else '禁用'
+        status = '✅ 有效' if data['status'] == 'active' else '⛔ 禁用'
         link_list += f"""
         <tr>
             <td>{link_id}</td>
@@ -266,222 +397,76 @@ def admin():
         """
     
     html_admin = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>邮箱管理后台</title>
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{ font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }}
-            .container {{ max-width: 1200px; margin: 0 auto; }}
-            .card {{ background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-            .card h2 {{ margin-bottom: 16px; font-size: 18px; }}
-            .row {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }}
-            .field {{ display: flex; flex-direction: column; }}
-            .field label {{ font-size: 13px; color: #666; margin-bottom: 4px; }}
-            .field input, .field select {{ padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; min-width: 120px; }}
-            .btn {{ padding: 10px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: bold; }}
-            .btn:hover {{ background: #45a049; }}
-            .btn-blue {{ background: #667eea; }}
-            .btn-blue:hover {{ background: #5a67d8; }}
-            .result-box {{ background: #f8f9fa; padding: 16px; border-radius: 8px; margin-top: 16px; display: none; }}
-            .result-box .email-item {{ padding: 6px 0; border-bottom: 1px solid #eee; font-family: monospace; }}
-            .result-box .link-area {{ background: #e8f5e9; padding: 12px; border-radius: 6px; margin-top: 10px; word-break: break-all; }}
-            .copy-btn {{ padding: 6px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: 8px; }}
-            .copy-btn:hover {{ background: #5a67d8; }}
-            .stats {{ display: flex; gap: 30px; flex-wrap: wrap; }}
-            .stats span {{ font-size: 14px; color: #666; }}
-            .stats strong {{ font-size: 18px; color: #1a1a2e; }}
-            .logout {{ float: right; color: #e74c3c; text-decoration: none; font-size: 14px; }}
-            table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-            th {{ background: #f8f9fa; padding: 10px; text-align: left; border-bottom: 2px solid #ddd; }}
-            td {{ padding: 10px; border-bottom: 1px solid #eee; }}
-            .separator {{ border: none; border-top: 2px dashed #ddd; margin: 20px 0; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="card">
-            <h2>邮箱管理后台 <a href="/logout" class="logout">退出</a></h2>
-            <div class="stats">
-                <span>总邮箱：<strong>{len(all_emails)}</strong></span>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>生成邮箱链接</h2>
-            <div class="row">
-                <div class="field">
-                    <label>邮箱种类</label>
-                    <select id="emailType">
-                        <option value="数字">数字邮箱</option>
-                        <option value="英文">英文邮箱</option>
-                        <option value="foxmail">foxmail邮箱</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label>数量</label>
-                    <input type="number" id="emailCount" value="1" min="1" max="100">
-                </div>
-                <div class="field">
-                    <label>有效期（天）</label>
-                    <input type="number" id="emailDays" value="30" min="1" max="365">
-                </div>
-                <button class="btn" onclick="generateLinks()">生成链接</button>
-            </div>
-            <div class="result-box" id="resultBox">
-                <div id="resultContent"></div>
-            </div>
-        </div>
-
-        <hr class="separator">
-
-        <div class="card">
-            <h2>输入邮箱生成链接</h2>
-            <div class="row">
-                <div class="field">
-                    <label>输入邮箱</label>
-                    <input type="text" id="manualEmail" placeholder="例如：123456789@qq.com" style="min-width:250px;">
-                </div>
-                <div class="field">
-                    <label>有效期（天）</label>
-                    <input type="number" id="manualDays" value="30" min="1" max="365">
-                </div>
-                <button class="btn btn-blue" onclick="generateManualLink()">生成链接</button>
-            </div>
-            <div class="result-box" id="manualResultBox">
-                <div id="manualResultContent"></div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>已生成的链接</h2>
-            <div style="overflow-x:auto;">
-                <table>
-                    <tr><th>链接ID</th><th>买家</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr>
-                    {link_list if link_list else '<tr><td colspan="7">暂无链接</td></tr>'}
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        async function generateLinks() {{
-            const type = document.getElementById('emailType').value;
-            const quantity = parseInt(document.getElementById('emailCount').value);
-            const days = parseInt(document.getElementById('emailDays').value);
-
-            if (!quantity || quantity < 1) {{
-                alert('请输入有效数量');
-                return;
-            }}
-
-            const resultBox = document.getElementById('resultBox');
-            const resultContent = document.getElementById('resultContent');
-            resultBox.style.display = 'block';
-            resultContent.innerHTML = '生成中...';
-
-            try {{
-                const res = await fetch('/api/auto_create_link', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        type: type,
-                        quantity: quantity,
-                        days: days,
-                        buyer_id: '手动生成'
-                    }})
-                }});
-                const data = await res.json();
-
-                if (data.error) {{
-                    resultContent.innerHTML = '<div style="color:red;">' + data.error + '</div>';
-                    return;
-                }}
-
-                let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
-                html += '<div style="margin-bottom:8px;">邮箱列表：</div>';
-                data.emails.forEach((email, idx) => {{
-                    html += '<div class="email-item">' + (idx+1) + '. ' + email + '</div>';
-                }});
-                html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
-                html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
-                html += '<div style="margin-top:8px;color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
-                html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
-
-                resultContent.innerHTML = html;
-                location.reload();
-
-            }} catch (e) {{
-                resultContent.innerHTML = '<div style="color:red;">请求失败：' + e.message + '</div>';
-            }}
-        }}
-
-        async function generateManualLink() {{
-            const email = document.getElementById('manualEmail').value.trim();
-            const days = parseInt(document.getElementById('manualDays').value) || 30;
-
-            if (!email) {{
-                alert('请输入邮箱地址');
-                return;
-            }}
-
-            const resultBox = document.getElementById('manualResultBox');
-            const resultContent = document.getElementById('manualResultContent');
-            resultBox.style.display = 'block';
-            resultContent.innerHTML = '生成中...';
-
-            try {{
-                const res = await fetch('/api/admin_create_link_manual', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        emails: [email],
-                        days: days
-                    }})
-                }});
-                const data = await res.json();
-
-                if (data.error) {{
-                    resultContent.innerHTML = '<div style="color:red;">' + data.error + '</div>';
-                    return;
-                }}
-
-                let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
-                html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
-                html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
-                html += '<div style="margin-top:8px;color:#999;font-size:13px;">邮箱：' + email + '</div>';
-                html += '<div style="color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
-
-                resultContent.innerHTML = html;
-                location.reload();
-
-            }} catch (e) {{
-                resultContent.innerHTML = '<div style="color:red;">请求失败：' + e.message + '</div>';
-            }}
-        }}
-
-        function copyText(text) {{
-            navigator.clipboard.writeText(text).then(() => {{
-                alert('已复制');
-            }});
-        }}
-
-        function copyAll(emails, link) {{
-            const text = '邮箱：' + emails.replace(/,/g, '、') + '\\n查询链接：' + link;
-            navigator.clipboard.writeText(text).then(() => {{
-                alert('已复制全部内容');
-            }});
-        }}
-    </script>
-</body>
-</html>
+    <h2>📦 链接管理后台</h2>
+    <hr>
+    <h3>➕ 手动生成链接</h3>
+    <form action="/api/admin_create_link" method="post">
+        <textarea name="emails" placeholder="每行一个邮箱" rows="5" style="width:100%;padding:10px;font-size:14px;"></textarea>
+        <br>
+        <select name="type">
+            <option value="数字">数字邮箱</option>
+            <option value="英文">英文邮箱</option>
+            <option value="foxmail">foxmail邮箱</option>
+        </select>
+        <input type="number" name="days" value="30" style="width:80px;">
+        <label>天</label>
+        <br><br>
+        <button type="submit" style="padding:10px 30px;background:#4CAF50;color:white;border:none;cursor:pointer;">生成链接</button>
+    </form>
+    <hr>
+    <h3>📊 库存统计</h3>
+    <ul>
+        <li>总邮箱数：{total}</li>
+        <li>已分配：{used}</li>
+        <li>可用：{total - used}</li>
+    </ul>
+    <hr>
+    <h3>🔗 链接列表（共 {len(links)} 个）</h3>
+    <table border="1" cellpadding="8" style="width:100%;border-collapse:collapse;">
+    <tr><th>链接ID</th><th>买家ID</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr>
+    {link_list if link_list else '<tr><td colspan="7">暂无链接</td></tr>'}
+    </table>
     '''
     return html_admin
 
+@app.route('/api/admin_create_link', methods=['POST'])
+def admin_create_link():
+    emails_text = request.form.get('emails', '')
+    type_name = request.form.get('type', '英文')
+    days = int(request.form.get('days', 30))
+    
+    emails = [e.strip() for e in emails_text.strip().split('\n') if e.strip()]
+    
+    if not emails:
+        return "请至少输入一个邮箱", 400
+    
+    link_id = str(uuid.uuid4())[:8]
+    links = load_links()
+    now = datetime.now()
+    
+    links[link_id] = {
+        'link_id': link_id,
+        'buyer_id': 'admin',
+        'type': type_name,
+        'emails': emails,
+        'quantity': len(emails),
+        'created_at': now.strftime("%Y-%m-%d %H:%M:%S"),
+        'expire_at': (now + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
+        'status': 'active',
+        'query_count': 0
+    }
+    save_links(links)
+    
+    link_url = f"https://{DOMAIN}/query?link={link_id}"
+    
+    return f'''
+    生成成功！<br>
+    链接：<a href="{link_url}" target="_blank">{link_url}</a><br>
+    邮箱：{', '.join(emails)}<br>
+    有效期：{links[link_id]['expire_at']}<br>
+    <a href="/admin">返回后台</a>
+    '''
 
-# ===== API接口 =====
 @app.route('/api/auto_create_link', methods=['POST'])
 def auto_create_link():
     data = request.get_json()
@@ -497,7 +482,7 @@ def auto_create_link():
     if type_name not in valid_types:
         return jsonify({'error': f'无效类型，请选择: {", ".join(valid_types)}'}), 400
     
-    selected_emails, error = assign_emails(type_name, quantity)
+    selected_emails, error = assign_emails(type_name, quantity, buyer_id)
     if error:
         return jsonify({'error': error}), 400
     
@@ -530,43 +515,6 @@ def auto_create_link():
         'expire_at': links[link_id]['expire_at']
     })
 
-
-@app.route('/api/admin_create_link_manual', methods=['POST'])
-def admin_create_link_manual():
-    data = request.get_json()
-    emails = data.get('emails', [])
-    days = data.get('days', 30)
-    
-    if not emails:
-        return jsonify({'error': '请提供邮箱'})
-    
-    link_id = str(uuid.uuid4())[:8]
-    links = load_links()
-    now = datetime.now()
-    
-    links[link_id] = {
-        'link_id': link_id,
-        'buyer_id': '手动生成',
-        'type': '手动',
-        'emails': emails,
-        'quantity': len(emails),
-        'created_at': now.strftime("%Y-%m-%d %H:%M:%S"),
-        'expire_at': (now + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
-        'status': 'active',
-        'query_count': 0
-    }
-    save_links(links)
-    
-    link_url = f"https://{DOMAIN}/query?link={link_id}"
-    
-    return jsonify({
-        'success': True,
-        'link_id': link_id,
-        'link_url': link_url,
-        'expire_at': links[link_id]['expire_at']
-    })
-
-
 @app.route('/query')
 def query_page():
     link_id = request.args.get('link')
@@ -582,10 +530,10 @@ def query_page():
     expire_time = datetime.strptime(link_data['expire_at'], "%Y-%m-%d %H:%M:%S")
     
     if now > expire_time:
-        return "链接已过期"
+        return "⛔ 链接已过期"
     
     if link_data['status'] != 'active':
-        return "链接已被禁用"
+        return "⛔ 链接已被禁用"
     
     html_content = f'''
     <!DOCTYPE html>
@@ -593,7 +541,7 @@ def query_page():
     <head><meta charset="UTF-8"><title>邮箱查询系统</title></head>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-            <h2>邮箱查询系统</h2>
+            <h2>📬 邮箱查询系统</h2>
             <p>输入已绑定的邮箱，查看最新邮件</p>
             <p style="color: #999; font-size: 13px;">有效期至：{link_data['expire_at']}</p>
             <form action="/api/query_mail" method="post">
@@ -607,7 +555,6 @@ def query_page():
     '''
     return html_content
 
-
 @app.route('/api/query_mail', methods=['POST'])
 def query_mail():
     link_id = request.form.get('link_id')
@@ -620,14 +567,16 @@ def query_mail():
     if '@' not in email:
         email = email + "@qq.com"
     
+    # 验证链接
     links = load_links()
     if link_id not in links:
         return "链接无效"
     
     link_data = links[link_id]
     if email not in link_data['emails']:
-        return f"该邮箱不在本链接中"
+        return f"该邮箱不在本链接中，可查询的邮箱：{', '.join(link_data['emails'])}"
     
+    # ===== 使用老系统的查询逻辑 =====
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
     
@@ -637,9 +586,9 @@ def query_mail():
         return f"查询失败：{result['error']}"
     
     if not result:
-        return "<h3>暂无邮件</h3>"
+        return "<h3>📭 暂无邮件</h3>"
     
-    html_result = f"<h3>{email} 的最新邮件</h3>"
+    html_result = f"<h3>📧 {email} 的最新邮件</h3>"
     for mail in result:
         html_result += f"""
         <div style="border-bottom:1px solid #ddd;padding:10px;">
@@ -651,21 +600,45 @@ def query_mail():
         """
     return html_result
 
-
 @app.route('/api/groups', methods=['GET'])
 def get_groups():
     all_emails = list(ACCOUNTS.keys())
+    used_data = load_used_emails()
+    all_used = []
+    for buyer, emails in used_data.get("records", {}).items():
+        all_used.extend(emails)
+    
     types = ["数字", "英文", "foxmail"]
     result = []
     for t in types:
         type_emails = [e for e in all_emails if detect_email_type(e) == t]
+        available = len([e for e in type_emails if e not in all_used])
         result.append({
             "name": t,
             "total": len(type_emails),
-            "available": len(type_emails)
+            "available": available
         })
     return jsonify(result)
 
+@app.route('/api/admin_logs')
+def api_admin_logs():
+    return jsonify({"logs": []})
+
+@app.route('/api/test_login', methods=['POST'])
+def test_login():
+    data = request.get_json()
+    email = data.get('email')
+    auth = data.get('auth')
+    
+    try:
+        mail = imaplib.IMAP4_SSL("imap.qq.com")
+        mail.login(email, auth)
+        mail.select("INBOX")
+        mail.close()
+        mail.logout()
+        return "登录成功"
+    except Exception as e:
+        return f"登录失败：{str(e)}"
 
 if __name__ == '__main__':
     print("=" * 60)
@@ -673,6 +646,6 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"已绑定 {len(ACCOUNTS)} 个邮箱")
     print("后台密码: 060910")
-    print("访问 http://127.0.0.1:8080")
+    print("访问 http://127.0.0.1:5000")
     print("=" * 60)
     app.run(host='0.0.0.0', port=8080)
