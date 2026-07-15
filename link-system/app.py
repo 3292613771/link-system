@@ -469,11 +469,17 @@ def admin_create_link():
 
 @app.route('/api/auto_create_link', methods=['POST'])
 def auto_create_link():
-    data = request.get_json()
-    type_name = data.get('type', '英文')
-    quantity = data.get('quantity', 1)
-    days = data.get('days', DEFAULT_DAYS)
-    buyer_id = data.get('buyer_id', str(uuid.uuid4())[:8])
+    data = request.get_json() or {}
+
+type_name = data.get("type", "英文")
+
+try:
+    quantity = int(data.get("quantity", 1))
+    days = int(data.get("days", DEFAULT_DAYS))
+except (TypeError, ValueError):
+    return jsonify({"error": "quantity 和 days 必须为整数"}), 400
+
+buyer_id = str(data.get("buyer_id") or str(uuid.uuid4())[:8])
     
     if quantity <= 0:
         return jsonify({'error': '数量必须大于0'}), 400
