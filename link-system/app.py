@@ -471,27 +471,26 @@ def admin_create_link():
 def auto_create_link():
     data = request.get_json() or {}
     
-    type_name = data.get("type", "英文")
+    type_name = data.get('type', '英文')
     
     try:
-        quantity = int(data.get("quantity", 1))
-        days = int(data.get("days", DEFAULT_DAYS))
+        quantity = int(data.get('quantity', 1))
+        days = int(data.get('days', DEFAULT_DAYS))
     except (TypeError, ValueError):
-        return jsonify({"error": "quantity 和 days 必须为整数"}), 400
+        return "quantity 和 days 必须为整数", 400
     
-    buyer_id = str(data.get("buyer_id") or str(uuid.uuid4())[:8])
+    buyer_id = str(data.get('buyer_id') or str(uuid.uuid4())[:8])
     
-    # 校验数量
     if quantity <= 0:
-        return jsonify({"error": "数量必须大于0"}), 400
+        return "数量必须大于0", 400
     
-    valid_types = ["数字", "英文", "foxmail"]
+    valid_types = ['数字', '英文', 'foxmail']
     if type_name not in valid_types:
-        return jsonify({"error": f"无效类型，请选择: {', '.join(valid_types)}"}), 400
+        return f"无效类型，请选择: {', '.join(valid_types)}", 400
     
     selected_emails, error = assign_emails(type_name, quantity, buyer_id)
     if error:
-        return jsonify({"error": error}), 400
+        return f"分配失败：{error}", 400
     
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
@@ -512,16 +511,12 @@ def auto_create_link():
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
     
-    return jsonify({
-        'success': True,
-        'link_id': link_id,
-        'link_url': link_url,
-        'type': type_name,
-        'emails': selected_emails,
-        'quantity': quantity,
-        'expire_at': links[link_id]['expire_at']
-    })
+    # 纯文本格式
+    return f"""您购买的邮箱已发货
 
+邮箱：{selected_emails[0]}
+查询链接：{link_url}
+有效期至：{links[link_id]['expire_at']}"""
 @app.route('/query')
 def query_page():
     link_id = request.args.get('link')
