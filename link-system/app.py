@@ -13,6 +13,7 @@ import re
 import html
 import os
 import json
+import shutil
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 import uuid
@@ -289,8 +290,16 @@ def load_links():
         return {}
 
 def save_links(data):
+    # 保存主文件
     with open(LINKS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    # 自动备份到 links_backup.json
+    try:
+        with open("links_backup.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"备份失败: {e}")
 
 def load_used_emails():
     try:
@@ -469,39 +478,19 @@ def admin():
         </div>
 
         <div class="card">
-            <h2>生成邮箱链接</h2>
+            <h2>手动生成链接</h2>
             <div class="row">
                 <div class="field">
-                    <label>邮箱种类</label>
+                    <label>输入邮箱</label>
+                    <textarea id="manualEmails" placeholder="每行一个邮箱" rows="5" style="min-width:350px;padding:10px;border:2px solid #ddd;border-radius:8px;font-size:14px;font-family:monospace;"></textarea>
+                </div>
+                <div class="field">
+                    <label>选择类型</label>
                     <select id="emailType">
                         <option value="数字">数字邮箱</option>
                         <option value="英文">英文邮箱</option>
                         <option value="foxmail">foxmail邮箱</option>
                     </select>
-                </div>
-                <div class="field">
-                    <label>数量</label>
-                    <input type="number" id="emailCount" value="1" min="1" max="100">
-                </div>
-                <div class="field">
-                    <label>有效期（天）</label>
-                    <input type="number" id="emailDays" value="30" min="1" max="365">
-                </div>
-                <button class="btn" onclick="generateLinks()">生成链接</button>
-            </div>
-            <div class="result-box" id="resultBox">
-                <div id="resultContent"></div>
-            </div>
-        </div>
-
-        <hr class="separator">
-
-        <div class="card">
-            <h2>输入邮箱生成链接</h2>
-            <div class="row">
-                <div class="field">
-                    <label>输入邮箱</label>
-                    <input type="text" id="manualEmail" placeholder="例如：123456789@qq.com" style="min-width:250px;">
                 </div>
                 <div class="field">
                     <label>有效期（天）</label>
@@ -588,30 +577,35 @@ def admin():
             }}
         }}
 
-        async function generateLinks() {{
+        async function generateManualLink() {{
+            const emailsText = document.getElementById('manualEmails').value.trim();
             const type = document.getElementById('emailType').value;
-            const quantity = parseInt(document.getElementById('emailCount').value);
-            const days = parseInt(document.getElementById('emailDays').value);
+            const days = parseInt(document.getElementById('manualDays').value) || 30;
 
-            if (!quantity || quantity < 1) {{
-                alert('请输入有效数量');
+            if (!emailsText) {{
+                alert('请输入邮箱地址');
                 return;
             }}
 
-            const resultBox = document.getElementById('resultBox');
-            const resultContent = document.getElementById('resultContent');
+            const emails = emailsText.split('\\n').map(e => e.trim()).filter(e => e);
+            if (emails.length === 0) {{
+                alert('请输入有效邮箱地址');
+                return;
+            }}
+
+            const resultBox = document.getElementById('manualResultBox');
+            const resultContent = document.getElementById('manualResultContent');
             resultBox.style.display = 'block';
             resultContent.innerHTML = '生成中...';
 
             try {{
-                const res = await fetch('/api/auto_create_link', {{
+                const res = await fetch('/api/admin_create_link', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
+                        emails: emails,
                         type: type,
-                        quantity: quantity,
-                        days: days,
-                        buyer_id: '手动生成'
+                        days: days
                     }})
                 }});
                 const data = await res.json();
@@ -630,50 +624,6 @@ def admin():
                 html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
                 html += '<div style="margin-top:8px;color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
                 html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
-
-                resultContent.innerHTML = html;
-                location.reload();
-
-            }} catch (e) {{
-                resultContent.innerHTML = '<div style="color:red;">请求失败：' + e.message + '</div>';
-            }}
-        }}
-
-        async function generateManualLink() {{
-            const email = document.getElementById('manualEmail').value.trim();
-            const days = parseInt(document.getElementById('manualDays').value) || 30;
-
-            if (!email) {{
-                alert('请输入邮箱地址');
-                return;
-            }}
-
-            const resultBox = document.getElementById('manualResultBox');
-            const resultContent = document.getElementById('manualResultContent');
-            resultBox.style.display = 'block';
-            resultContent.innerHTML = '生成中...';
-
-            try {{
-                const res = await fetch('/api/admin_create_link_manual', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        emails: [email],
-                        days: days
-                    }})
-                }});
-                const data = await res.json();
-
-                if (data.error) {{
-                    resultContent.innerHTML = '<div style="color:red;">' + data.error + '</div>';
-                    return;
-                }}
-
-                let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
-                html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
-                html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
-                html += '<div style="margin-top:8px;color:#999;font-size:13px;">邮箱：' + email + '</div>';
-                html += '<div style="color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
 
                 resultContent.innerHTML = html;
                 location.reload();
@@ -703,14 +653,13 @@ def admin():
 
 @app.route('/api/admin_create_link', methods=['POST'])
 def admin_create_link():
-    emails_text = request.form.get('emails', '')
-    type_name = request.form.get('type', '英文')
-    days = int(request.form.get('days', 30))
-    
-    emails = [e.strip() for e in emails_text.strip().split('\n') if e.strip()]
+    data = request.get_json()
+    emails = data.get('emails', [])
+    type_name = data.get('type', '英文')
+    days = data.get('days', 30)
     
     if not emails:
-        return "请至少输入一个邮箱", 400
+        return jsonify({'error': '请提供邮箱'})
     
     link_id = str(uuid.uuid4())[:8]
     links = load_links()
@@ -731,13 +680,13 @@ def admin_create_link():
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
     
-    return f'''
-    生成成功！<br>
-    链接：<a href="{link_url}" target="_blank">{link_url}</a><br>
-    邮箱：{', '.join(emails)}<br>
-    有效期：{links[link_id]['expire_at']}<br>
-    <a href="/admin">返回后台</a>
-    '''
+    return jsonify({
+        'success': True,
+        'link_id': link_id,
+        'link_url': link_url,
+        'emails': emails,
+        'expire_at': links[link_id]['expire_at']
+    })
 
 @app.route('/api/auto_create_link', methods=['POST'])
 def auto_create_link():
