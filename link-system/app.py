@@ -30,7 +30,7 @@ ADMIN_PASSWORD = "060910"
 DEFAULT_DAYS = 30
 DOMAIN = "mail-auto.zeabur.app"
 
-# ===== 老系统的账号读取逻辑 =====
+# ===== 读取账号 =====
 def load_accounts():
     accounts = {}
     try:
@@ -73,7 +73,7 @@ print(f"已加载 {len(ACCOUNTS)} 个绑定邮箱")
 def get_auth_map():
     return ACCOUNTS
 
-# ===== 老系统的邮件解析函数 =====
+# ===== 邮件解析 =====
 def decode_str(s):
     if not s:
         return ""
@@ -170,7 +170,7 @@ def get_mail_content(msg):
     except Exception as e:
         return f"解析失败"
 
-def get_latest_mails(email_addr, limit=10):
+def get_latest_mails(email_addr, limit=1):
     if email_addr not in ACCOUNTS:
         return {'error': f'邮箱 "{email_addr}" 未绑定'}
     
@@ -279,7 +279,7 @@ def get_latest_mails(email_addr, limit=10):
             except:
                 pass
 
-# ===== 链接管理函数 =====
+# ===== 链接管理 =====
 def load_links():
     try:
         with open(LINKS_FILE, "r", encoding="utf-8") as f:
@@ -333,7 +333,21 @@ def assign_emails(type_name, quantity, buyer_id):
     
     return selected, None
 
-# ===== 登录页面 =====
+# ===== 失效链接接口 =====
+@app.route('/api/disable_link', methods=['POST'])
+def disable_link():
+    data = request.get_json()
+    link_id = data.get('link_id')
+    
+    links = load_links()
+    if link_id not in links:
+        return jsonify({'error': '链接不存在'})
+    
+    links[link_id]['status'] = 'disabled'
+    save_links(links)
+    return jsonify({'success': True})
+
+# ===== 登录 =====
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -352,7 +366,7 @@ def login():
     <html>
     <head><meta charset="UTF-8"><title>后台登录</title></head>
     <body style="font-family: Arial; max-width: 400px; margin: 100px auto; padding: 20px;">
-        <h2>🔐 后台登录</h2>
+        <h2>后台登录</h2>
         <form method="post">
             <input type="password" name="password" placeholder="请输入密码" style="width:100%;padding:12px;font-size:16px;margin:10px 0;border:2px solid #ddd;border-radius:8px;">
             <button type="submit" style="width:100%;padding:12px;background:#4CAF50;color:white;border:none;font-size:16px;cursor:pointer;border-radius:8px;">登录</button>
@@ -360,6 +374,11 @@ def login():
     </body>
     </html>
     '''
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
 
 # ===== 路由 =====
 @app.route('/')
@@ -383,7 +402,8 @@ def admin():
     
     link_list = ""
     for link_id, data in links.items():
-        status = '✅ 有效' if data['status'] == 'active' else '⛔ 禁用'
+        status = data.get('status', 'active')
+        status_text = '有效' if status == 'active' else '已失效'
         link_list += f"""
         <tr>
             <td>{link_id}</td>
@@ -392,40 +412,291 @@ def admin():
             <td>{len(data['emails'])}</td>
             <td>{data['created_at']}</td>
             <td>{data['expire_at']}</td>
-            <td>{status}</td>
+            <td>{status_text}</td>
+            <td>
+                <button onclick="disableLink('{link_id}')" style="padding:4px 12px;background:#e74c3c;color:white;border:none;border-radius:4px;cursor:pointer;">失效</button>
+            </td>
         </tr>
         """
     
     html_admin = f'''
-    <h2>📦 链接管理后台</h2>
-    <hr>
-    <h3>➕ 手动生成链接</h3>
-    <form action="/api/admin_create_link" method="post">
-        <textarea name="emails" placeholder="每行一个邮箱" rows="5" style="width:100%;padding:10px;font-size:14px;"></textarea>
-        <br>
-        <select name="type">
-            <option value="数字">数字邮箱</option>
-            <option value="英文">英文邮箱</option>
-            <option value="foxmail">foxmail邮箱</option>
-        </select>
-        <input type="number" name="days" value="30" style="width:80px;">
-        <label>天</label>
-        <br><br>
-        <button type="submit" style="padding:10px 30px;background:#4CAF50;color:white;border:none;cursor:pointer;">生成链接</button>
-    </form>
-    <hr>
-    <h3>📊 库存统计</h3>
-    <ul>
-        <li>总邮箱数：{total}</li>
-        <li>已分配：{used}</li>
-        <li>可用：{total - used}</li>
-    </ul>
-    <hr>
-    <h3>🔗 链接列表（共 {len(links)} 个）</h3>
-    <table border="1" cellpadding="8" style="width:100%;border-collapse:collapse;">
-    <tr><th>链接ID</th><th>买家ID</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr>
-    {link_list if link_list else '<tr><td colspan="7">暂无链接</td></tr>'}
-    </table>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>邮箱管理后台</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            .card {{ background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+            .card h2 {{ margin-bottom: 16px; font-size: 18px; }}
+            .row {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }}
+            .field {{ display: flex; flex-direction: column; }}
+            .field label {{ font-size: 13px; color: #666; margin-bottom: 4px; }}
+            .field input, .field select {{ padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; min-width: 120px; }}
+            .btn {{ padding: 10px 30px; background: #4CAF50; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: bold; }}
+            .btn:hover {{ background: #45a049; }}
+            .btn-blue {{ background: #667eea; }}
+            .btn-blue:hover {{ background: #5a67d8; }}
+            .btn-danger {{ background: #e74c3c; }}
+            .btn-danger:hover {{ background: #c0392b; }}
+            .result-box {{ background: #f8f9fa; padding: 16px; border-radius: 8px; margin-top: 16px; display: none; }}
+            .result-box .email-item {{ padding: 6px 0; border-bottom: 1px solid #eee; font-family: monospace; }}
+            .result-box .link-area {{ background: #e8f5e9; padding: 12px; border-radius: 6px; margin-top: 10px; word-break: break-all; }}
+            .copy-btn {{ padding: 6px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: 8px; }}
+            .copy-btn:hover {{ background: #5a67d8; }}
+            .stats {{ display: flex; gap: 30px; flex-wrap: wrap; }}
+            .stats span {{ font-size: 14px; color: #666; }}
+            .stats strong {{ font-size: 18px; color: #1a1a2e; }}
+            .logout {{ float: right; color: #e74c3c; text-decoration: none; font-size: 14px; }}
+            table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+            th {{ background: #f8f9fa; padding: 10px; text-align: left; border-bottom: 2px solid #ddd; }}
+            td {{ padding: 10px; border-bottom: 1px solid #eee; }}
+            .separator {{ border: none; border-top: 2px dashed #ddd; margin: 20px 0; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2>邮箱管理后台 <a href="/logout" class="logout">退出</a></h2>
+            <div class="stats">
+                <span>总邮箱：<strong>{total}</strong></span>
+                <span>已分配：<strong>{used}</strong></span>
+                <span>可用：<strong>{total - used}</strong></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>生成邮箱链接</h2>
+            <div class="row">
+                <div class="field">
+                    <label>邮箱种类</label>
+                    <select id="emailType">
+                        <option value="数字">数字邮箱</option>
+                        <option value="英文">英文邮箱</option>
+                        <option value="foxmail">foxmail邮箱</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>数量</label>
+                    <input type="number" id="emailCount" value="1" min="1" max="100">
+                </div>
+                <div class="field">
+                    <label>有效期（天）</label>
+                    <input type="number" id="emailDays" value="30" min="1" max="365">
+                </div>
+                <button class="btn" onclick="generateLinks()">生成链接</button>
+            </div>
+            <div class="result-box" id="resultBox">
+                <div id="resultContent"></div>
+            </div>
+        </div>
+
+        <hr class="separator">
+
+        <div class="card">
+            <h2>输入邮箱生成链接</h2>
+            <div class="row">
+                <div class="field">
+                    <label>输入邮箱</label>
+                    <input type="text" id="manualEmail" placeholder="例如：123456789@qq.com" style="min-width:250px;">
+                </div>
+                <div class="field">
+                    <label>有效期（天）</label>
+                    <input type="number" id="manualDays" value="30" min="1" max="365">
+                </div>
+                <button class="btn btn-blue" onclick="generateManualLink()">生成链接</button>
+            </div>
+            <div class="result-box" id="manualResultBox">
+                <div id="manualResultContent"></div>
+            </div>
+        </div>
+
+        <hr class="separator">
+
+        <div class="card" style="border:2px solid #e74c3c;">
+            <h2 style="color:#e74c3c;">输入链接ID使其失效</h2>
+            <div class="row">
+                <div class="field">
+                    <label>链接ID</label>
+                    <input type="text" id="disableLinkInput" placeholder="例如：abc123" style="min-width:250px;">
+                </div>
+                <button class="btn btn-danger" onclick="disableLinkByInput()">失效</button>
+            </div>
+            <div id="disableResult" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>已生成的链接</h2>
+            <div style="overflow-x:auto;">
+                <table>
+                    <tr><th>链接ID</th><th>买家</th><th>类型</th><th>数量</th><th>创建时间</th><th>过期时间</th><th>状态</th><th>操作</th></tr>
+                    {link_list if link_list else '<tr><td colspan="8">暂无链接</td></tr>'}
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function disableLink(linkId) {{
+            if (!confirm('确定要失效该链接吗？')) return;
+            
+            try {{
+                const res = await fetch('/api/disable_link', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{link_id: linkId}})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    alert('链接已失效');
+                    location.reload();
+                }} else {{
+                    alert('操作失败：' + data.error);
+                }}
+            }} catch (e) {{
+                alert('请求失败');
+            }}
+        }}
+
+        async function disableLinkByInput() {{
+            const linkId = document.getElementById('disableLinkInput').value.trim();
+            if (!linkId) {{
+                alert('请输入链接ID');
+                return;
+            }}
+            
+            if (!confirm('确定要失效链接 ' + linkId + ' 吗？')) return;
+            
+            try {{
+                const res = await fetch('/api/disable_link', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{link_id: linkId}})
+                }});
+                const data = await res.json();
+                if (data.success) {{
+                    document.getElementById('disableResult').innerHTML = '<div style="color:green;font-weight:bold;">链接已失效</div>';
+                    setTimeout(function(){{ location.reload(); }}, 1000);
+                }} else {{
+                    document.getElementById('disableResult').innerHTML = '<div style="color:red;">' + data.error + '</div>';
+                }}
+            }} catch (e) {{
+                document.getElementById('disableResult').innerHTML = '<div style="color:red;">请求失败</div>';
+            }}
+        }}
+
+        async function generateLinks() {{
+            const type = document.getElementById('emailType').value;
+            const quantity = parseInt(document.getElementById('emailCount').value);
+            const days = parseInt(document.getElementById('emailDays').value);
+
+            if (!quantity || quantity < 1) {{
+                alert('请输入有效数量');
+                return;
+            }}
+
+            const resultBox = document.getElementById('resultBox');
+            const resultContent = document.getElementById('resultContent');
+            resultBox.style.display = 'block';
+            resultContent.innerHTML = '生成中...';
+
+            try {{
+                const res = await fetch('/api/auto_create_link', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        type: type,
+                        quantity: quantity,
+                        days: days,
+                        buyer_id: '手动生成'
+                    }})
+                }});
+                const data = await res.json();
+
+                if (data.error) {{
+                    resultContent.innerHTML = '<div style="color:red;">' + data.error + '</div>';
+                    return;
+                }}
+
+                let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
+                html += '<div style="margin-bottom:8px;">邮箱列表：</div>';
+                data.emails.forEach((email, idx) => {{
+                    html += '<div class="email-item">' + (idx+1) + '. ' + email + '</div>';
+                }});
+                html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
+                html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
+                html += '<div style="margin-top:8px;color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
+                html += '<button onclick="copyAll(\'' + data.emails.join(',') + '\', \'' + data.link_url + '\')" style="margin-top:12px;padding:8px 20px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">复制全部</button>';
+
+                resultContent.innerHTML = html;
+                location.reload();
+
+            }} catch (e) {{
+                resultContent.innerHTML = '<div style="color:red;">请求失败：' + e.message + '</div>';
+            }}
+        }}
+
+        async function generateManualLink() {{
+            const email = document.getElementById('manualEmail').value.trim();
+            const days = parseInt(document.getElementById('manualDays').value) || 30;
+
+            if (!email) {{
+                alert('请输入邮箱地址');
+                return;
+            }}
+
+            const resultBox = document.getElementById('manualResultBox');
+            const resultContent = document.getElementById('manualResultContent');
+            resultBox.style.display = 'block';
+            resultContent.innerHTML = '生成中...';
+
+            try {{
+                const res = await fetch('/api/admin_create_link_manual', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        emails: [email],
+                        days: days
+                    }})
+                }});
+                const data = await res.json();
+
+                if (data.error) {{
+                    resultContent.innerHTML = '<div style="color:red;">' + data.error + '</div>';
+                    return;
+                }}
+
+                let html = '<div style="font-weight:bold;margin-bottom:10px;">生成成功</div>';
+                html += '<div class="link-area">查询链接：<span style="color:#667eea;">' + data.link_url + '</span>';
+                html += '<button class="copy-btn" onclick="copyText(\'' + data.link_url + '\')">复制链接</button></div>';
+                html += '<div style="margin-top:8px;color:#999;font-size:13px;">邮箱：' + email + '</div>';
+                html += '<div style="color:#999;font-size:13px;">有效期至：' + data.expire_at + '</div>';
+
+                resultContent.innerHTML = html;
+                location.reload();
+
+            }} catch (e) {{
+                resultContent.innerHTML = '<div style="color:red;">请求失败：' + e.message + '</div>';
+            }}
+        }}
+
+        function copyText(text) {{
+            navigator.clipboard.writeText(text).then(() => {{
+                alert('已复制');
+            }});
+        }}
+
+        function copyAll(emails, link) {{
+            const text = '邮箱：' + emails.replace(/,/g, '、') + '\\n查询链接：' + link;
+            navigator.clipboard.writeText(text).then(() => {{
+                alert('已复制全部内容');
+            }});
+        }}
+    </script>
+</body>
+</html>
     '''
     return html_admin
 
@@ -530,14 +801,19 @@ def query_page():
         return "链接不存在"
     
     link_data = links[link_id]
+    
+    # 检查是否已失效
+    if link_data.get('status') == 'disabled':
+        return "链接已失效"
+    
     now = datetime.now()
     expire_time = datetime.strptime(link_data['expire_at'], "%Y-%m-%d %H:%M:%S")
     
     if now > expire_time:
-        return "⛔ 链接已过期"
+        return "链接已过期"
     
     if link_data['status'] != 'active':
-        return "⛔ 链接已被禁用"
+        return "链接已被禁用"
     
     html_content = f'''
     <!DOCTYPE html>
@@ -545,7 +821,7 @@ def query_page():
     <head><meta charset="UTF-8"><title>邮箱查询系统</title></head>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-            <h2>📬 邮箱查询系统</h2>
+            <h2>邮箱查询系统</h2>
             <p>输入已绑定的邮箱，查看最新邮件</p>
             <p style="color: #999; font-size: 13px;">有效期至：{link_data['expire_at']}</p>
             <form action="/api/query_mail" method="post">
@@ -580,19 +856,23 @@ def query_mail():
     if email not in link_data['emails']:
         return f"该邮箱不在本链接中，可查询的邮箱：{', '.join(link_data['emails'])}"
     
+    # 检查是否已失效
+    if link_data.get('status') == 'disabled':
+        return "链接已失效"
+    
     # ===== 使用老系统的查询逻辑 =====
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
     
-    result = get_latest_mails(email, limit=10)
+    result = get_latest_mails(email, limit=1)
     
     if isinstance(result, dict) and 'error' in result:
         return f"查询失败：{result['error']}"
     
     if not result:
-        return "<h3>📭 暂无邮件</h3>"
+        return "<h3>暂无邮件</h3>"
     
-    html_result = f"<h3>📧 {email} 的最新邮件</h3>"
+    html_result = f"<h3>{email} 的最新邮件</h3>"
     for mail in result:
         html_result += f"""
         <div style="border-bottom:1px solid #ddd;padding:10px;">
