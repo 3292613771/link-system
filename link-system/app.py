@@ -19,16 +19,14 @@ import random
 from datetime import datetime, timedelta
 import shutil
 import threading
-import base64
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
 # ===== 配置文件路径（支持持久化） =====
-# Zeabur等平台会提供持久化目录，通常是 /data 或通过环境变量指定
-PERSISTENT_DIR = os.environ.get('PERSISTENT_DIR', '/data')  # 持久化目录
-DATA_DIR = os.path.join(PERSISTENT_DIR, 'mail_data')  # 数据目录
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')  # 备份目录
+PERSISTENT_DIR = os.environ.get('PERSISTENT_DIR', '/data')
+DATA_DIR = os.path.join(PERSISTENT_DIR, 'mail_data')
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 
 # 确保目录存在
 for dir_path in [PERSISTENT_DIR, DATA_DIR, BACKUP_DIR]:
@@ -46,14 +44,11 @@ USED_EMAILS_FILE = os.path.join(DATA_DIR, "used_emails.json")
 LOCAL_LINKS_FILE = "links.json"
 LOCAL_USED_FILE = "used_emails.json"
 
-# 初始化数据文件
 def init_data_files():
     """初始化数据文件，优先使用持久化存储的版本"""
-    # 如果持久化目录有文件，使用持久化的
     if os.path.exists(LINKS_FILE):
         print("✅ 使用持久化存储的链接数据")
     elif os.path.exists(LOCAL_LINKS_FILE):
-        # 否则从本地复制到持久化目录
         shutil.copy2(LOCAL_LINKS_FILE, LINKS_FILE)
         print("📋 从本地复制链接数据到持久化存储")
     
@@ -63,7 +58,6 @@ def init_data_files():
         shutil.copy2(LOCAL_USED_FILE, USED_EMAILS_FILE)
         print("📋 从本地复制使用记录到持久化存储")
 
-# 初始化
 init_data_files()
 
 ACCOUNTS_FILE = "accounts.txt"
@@ -111,7 +105,6 @@ def load_accounts():
 ACCOUNTS = load_accounts()
 print(f"已加载 {len(ACCOUNTS)} 个绑定邮箱")
 print(f"数据存储路径: {DATA_DIR}")
-print(f"数据文件: {LINKS_FILE}, {USED_EMAILS_FILE}")
 
 def get_auth_map():
     return ACCOUNTS
@@ -148,9 +141,6 @@ def clean_html_to_text(html_text):
     return text.strip()
 
 def get_mail_content(msg):
-    import re
-    import html
-    
     content = ""
     
     try:
@@ -225,19 +215,17 @@ def get_latest_mail(email_addr):
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
         
-        # 读取收件箱
         mail.select("INBOX")
         status, data = mail.search(None, "ALL")
         
         if not data[0]:
             return None
         
-        # 获取最新一封邮件
         mail_ids = data[0].split()
         if not mail_ids:
             return None
         
-        latest_id = mail_ids[-1]  # 最新的一封
+        latest_id = mail_ids[-1]
         
         _, msg_data = mail.fetch(latest_id, "(RFC822)")
         
@@ -281,116 +269,6 @@ def get_latest_mail(email_addr):
             except:
                 pass
 
-def get_latest_mails(email_addr, limit=10):
-    """保留原函数以兼容其他调用"""
-    if email_addr not in ACCOUNTS:
-        return {'error': f'邮箱 "{email_addr}" 未绑定'}
-    
-    auth_code = ACCOUNTS[email_addr]
-    mail = None
-    
-    try:
-        mail = imaplib.IMAP4_SSL("imap.qq.com")
-        mail.login(email_addr, auth_code)
-        
-        all_mail_ids = []
-        folder_info = []
-        
-        # 读取收件箱
-        try:
-            mail.select("INBOX")
-            status, data = mail.search(None, "ALL")
-            if data[0]:
-                for mid in data[0].split():
-                    all_mail_ids.append(mid)
-                    folder_info.append("INBOX")
-        except Exception as e:
-            print(f"读取收件箱失败: {e}")
-        
-        # 读取垃圾箱
-        spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
-        for folder in spam_folders:
-            try:
-                mail.select(folder)
-                status, data = mail.search(None, "ALL")
-                if data[0]:
-                    for mid in data[0].split():
-                        all_mail_ids.append(mid)
-                        folder_info.append(folder)
-                break
-            except:
-                continue
-        
-        if not all_mail_ids:
-            return []
-        
-        seen = set()
-        unique_ids = []
-        unique_folders = []
-        for mid, folder in zip(all_mail_ids, folder_info):
-            mid_str = mid.decode() if isinstance(mid, bytes) else str(mid)
-            if mid_str not in seen:
-                seen.add(mid_str)
-                unique_ids.append(mid)
-                unique_folders.append(folder)
-        
-        sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
-        latest_pairs = sorted_pairs[-limit:]
-        
-        mails = []
-        
-        for mail_id, folder in reversed(latest_pairs):
-            try:
-                mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
-                
-                mail.select(folder)
-                _, msg_data = mail.fetch(mail_id, "(RFC822)")
-                
-                for part in msg_data:
-                    if isinstance(part, tuple):
-                        msg = email.message_from_bytes(part[1])
-                        
-                        date_str = msg.get("Date", "")
-                        send_time = ""
-                        try:
-                            from email.utils import parsedate_to_datetime
-                            if date_str:
-                                dt = parsedate_to_datetime(date_str)
-                                send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except:
-                            send_time = date_str[:30]
-                        subject = decode_str(msg.get("Subject", "无主题"))
-                        sender = decode_str(msg.get("From", "未知发件人"))
-                        content = get_mail_content(msg)
-                        
-                        mails.append({
-                            'mail_id': mail_id_str,
-                            'sender': sender,
-                            'subject': subject,
-                            'content': content,
-                            'time': send_time
-                        })
-                        break
-            except Exception as e:
-                print(f"读取单封邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
-                continue
-        
-        return mails
-        
-    except Exception as e:
-        return {'error': f'连接失败：{str(e)}'}
-    
-    finally:
-        if mail:
-            try:
-                mail.close()
-            except:
-                pass
-            try:
-                mail.logout()
-            except:
-                pass
-
 # ===== 自动备份功能 =====
 def backup_data():
     """自动备份所有数据文件"""
@@ -398,11 +276,9 @@ def backup_data():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_folder = os.path.join(BACKUP_DIR, f"backup_{timestamp}")
         
-        # 创建备份文件夹
         if not os.path.exists(backup_folder):
             os.makedirs(backup_folder)
         
-        # 备份文件列表
         files_to_backup = [LINKS_FILE, USED_EMAILS_FILE]
         if os.path.exists(ACCOUNTS_FILE):
             files_to_backup.append(ACCOUNTS_FILE)
@@ -411,13 +287,11 @@ def backup_data():
             if os.path.exists(file_path):
                 shutil.copy2(file_path, os.path.join(backup_folder, os.path.basename(file_path)))
         
-        # 同时保存一份最新备份
         latest_backup = os.path.join(BACKUP_DIR, "latest")
         if os.path.exists(latest_backup):
             shutil.rmtree(latest_backup)
         shutil.copytree(backup_folder, latest_backup)
         
-        # 清理旧备份（保留最近30个）
         all_backups = sorted([d for d in os.listdir(BACKUP_DIR) 
                              if d.startswith("backup_") and os.path.isdir(os.path.join(BACKUP_DIR, d))])
         while len(all_backups) > 30:
@@ -435,20 +309,58 @@ def backup_data():
 def auto_backup_worker():
     """后台自动备份线程"""
     while True:
-        time.sleep(3600)  # 每小时备份一次
+        time.sleep(3600)
         try:
             backup_data()
         except Exception as e:
             print(f"自动备份出错: {e}")
 
-# 启动后台备份线程
+# ===== 清理过期链接功能 =====
+def clean_expired_links():
+    """清理所有过期链接"""
+    links = load_links()
+    now = datetime.now()
+    cleaned_count = 0
+    cleaned_links = {}
+    
+    for link_id, data in links.items():
+        try:
+            expire_time = datetime.strptime(data['expire_at'], "%Y-%m-%d %H:%M:%S")
+            if now > expire_time and data.get('status') == 'active':
+                cleaned_count += 1
+                continue
+        except:
+            pass
+        
+        cleaned_links[link_id] = data
+    
+    if cleaned_count > 0:
+        save_links(cleaned_links)
+        backup_data()  # 清理后立即备份
+    
+    return cleaned_count
+
+def auto_clean_worker():
+    """后台自动清理过期链接（每天执行一次）"""
+    while True:
+        time.sleep(86400)
+        try:
+            count = clean_expired_links()
+            if count > 0:
+                print(f"✅ 自动清理了 {count} 个过期链接")
+        except Exception as e:
+            print(f"自动清理出错: {e}")
+
+# 启动后台线程
 backup_thread = threading.Thread(target=auto_backup_worker, daemon=True)
 backup_thread.start()
+
+clean_thread = threading.Thread(target=auto_clean_worker, daemon=True)
+clean_thread.start()
 
 # ===== 链接管理函数 =====
 def load_links():
     try:
-        # 优先从持久化目录读取
         if os.path.exists(LINKS_FILE):
             with open(LINKS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -457,7 +369,6 @@ def load_links():
         return {}
 
 def save_links(data):
-    # 保存到持久化目录
     with open(LINKS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -553,20 +464,39 @@ def admin():
         all_used.extend(emails)
     used = len(set(all_used))
     
-    # 显示数据存储信息
+    # 统计过期链接数量
+    now = datetime.now()
+    expired_count = 0
+    for link_id, data in links.items():
+        try:
+            expire_time = datetime.strptime(data['expire_at'], "%Y-%m-%d %H:%M:%S")
+            if now > expire_time and data.get('status') == 'active':
+                expired_count += 1
+        except:
+            pass
+    
     data_info = f"""
     <div style="background: #e8f5e9; padding: 10px; border-radius: 8px; margin: 10px 0;">
         <strong>💾 数据持久化状态：</strong>
         <span style="color: green;">✅ 已启用</span>
         <br>数据目录：{DATA_DIR}
-        <br>链接文件：{LINKS_FILE} ({'✅ 存在' if os.path.exists(LINKS_FILE) else '❌ 不存在'})
-        <br>使用记录：{USED_EMAILS_FILE} ({'✅ 存在' if os.path.exists(USED_EMAILS_FILE) else '❌ 不存在'})
+        <br>链接文件：{'✅ 存在' if os.path.exists(LINKS_FILE) else '❌ 不存在'}
+        <br>使用记录：{'✅ 存在' if os.path.exists(USED_EMAILS_FILE) else '❌ 不存在'}
     </div>
     """
     
     link_list = ""
     for link_id, data in links.items():
         status = '✅ 有效' if data['status'] == 'active' else '⛔ 禁用'
+        is_expired = False
+        try:
+            expire_time = datetime.strptime(data['expire_at'], "%Y-%m-%d %H:%M:%S")
+            if now > expire_time:
+                is_expired = True
+                status = '⏰ 已过期'
+        except:
+            pass
+        
         link_list += f"""
         <tr>
             <td>{link_id}</td>
@@ -633,8 +563,9 @@ def admin():
         
         <!-- 备份管理 -->
         <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <h3>💾 数据备份</h3>
+            <h3>💾 数据备份（实时备份已启用）</h3>
             <p>最新备份时间：{get_latest_backup_time()}</p>
+            <p style="color: green; font-size: 14px;">✅ 生成/禁用/清理链接时自动备份</p>
             <a href="/api/manual_backup" style="padding: 10px 20px; background: #2196F3; color: white; 
                text-decoration: none; border-radius: 8px; display: inline-block;">
                 立即备份
@@ -642,6 +573,18 @@ def admin():
             <a href="/api/download_latest_backup" style="padding: 10px 20px; background: #4CAF50; color: white; 
                text-decoration: none; border-radius: 8px; display: inline-block; margin-left: 10px;">
                 下载最新备份
+            </a>
+        </div>
+        
+        <!-- 数据清理 -->
+        <div style="background: #fff3e0; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <h3>🧹 数据清理</h3>
+            <p>当前过期链接数：<strong style="color: red;">{expired_count}</strong></p>
+            <a href="/api/clean_expired_links" 
+               onclick="return confirm('确定要清理所有过期链接吗？此操作不可恢复！')"
+               style="padding: 10px 20px; background: #ff9800; color: white; 
+                      text-decoration: none; border-radius: 8px; display: inline-block;">
+                🗑️ 清理过期链接（{expired_count}个）
             </a>
         </div>
         
@@ -680,12 +623,28 @@ def disable_link():
     
     links[link_id]['status'] = 'disabled'
     save_links(links)
+    backup_data()  # 实时备份
     
     return f'''
     <h2>✅ 链接已失效</h2>
     <p>链接ID: {link_id}</p>
     <p>状态已更新为: 禁用</p>
-    <p>数据已保存到持久化存储，重新部署不会丢失</p>
+    <p>数据已保存并备份，重新部署不会丢失</p>
+    <a href="/admin">返回后台</a>
+    '''
+
+@app.route('/api/clean_expired_links')
+def api_clean_expired_links():
+    """手动清理过期链接"""
+    if not session.get('logged_in'):
+        return redirect('/login')
+    
+    cleaned_count = clean_expired_links()
+    
+    return f'''
+    <h2>✅ 清理完成</h2>
+    <p>清理了 {cleaned_count} 个过期链接</p>
+    <p>数据已备份</p>
     <a href="/admin">返回后台</a>
     '''
 
@@ -720,7 +679,6 @@ def download_latest_backup():
     if not os.path.exists(latest_backup):
         return "暂无备份文件"
     
-    # 创建压缩包
     import zipfile
     zip_path = os.path.join(BACKUP_DIR, "backup_latest.zip")
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -759,6 +717,7 @@ def admin_create_link():
         'query_count': 0
     }
     save_links(links)
+    backup_data()  # 实时备份
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
     
@@ -811,6 +770,7 @@ def auto_create_link():
         'query_count': 0
     }
     save_links(links)
+    backup_data()  # 实时备份
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
 
@@ -834,10 +794,13 @@ def query_page():
     
     link_data = links[link_id]
     now = datetime.now()
-    expire_time = datetime.strptime(link_data['expire_at'], "%Y-%m-%d %H:%M:%S")
     
-    if now > expire_time:
-        return "⛔ 链接已过期"
+    try:
+        expire_time = datetime.strptime(link_data['expire_at'], "%Y-%m-%d %H:%M:%S")
+        if now > expire_time:
+            return "⛔ 链接已过期"
+    except:
+        pass
     
     if link_data['status'] != 'active':
         return "⛔ 链接已被禁用"
@@ -874,7 +837,6 @@ def query_mail():
     if '@' not in email:
         email = email + "@qq.com"
     
-    # 验证链接
     links = load_links()
     if link_id not in links:
         return "链接无效"
@@ -886,11 +848,9 @@ def query_mail():
     if email not in link_data['emails']:
         return f"该邮箱不在本链接中，可查询的邮箱：{', '.join(link_data['emails'])}"
     
-    # 更新查询次数
     link_data['query_count'] = link_data.get('query_count', 0) + 1
     save_links(links)
     
-    # ===== 只查询最新一封邮件 =====
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
     
@@ -979,8 +939,14 @@ if __name__ == '__main__':
     print(f"已绑定 {len(ACCOUNTS)} 个邮箱")
     print(f"数据持久化目录: {DATA_DIR}")
     print("后台密码: 060910")
+    print("实时备份: ✅ 已启用")
     print("访问 http://127.0.0.1:5000")
     print("=" * 60)
+    
+    # 启动时清理过期链接
+    cleaned = clean_expired_links()
+    if cleaned > 0:
+        print(f"✅ 启动时清理了 {cleaned} 个过期链接")
     
     # 启动时执行一次备份
     backup_data()
