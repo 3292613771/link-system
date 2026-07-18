@@ -109,7 +109,7 @@ print(f"数据存储路径: {DATA_DIR}")
 def get_auth_map():
     return ACCOUNTS
 
-# ===== 老系统的邮件解析函数 =====
+# ===== 邮件解析函数 =====
 def decode_str(s):
     if not s:
         return ""
@@ -203,8 +203,8 @@ def get_mail_content(msg):
     except Exception as e:
         return f"解析失败"
 
-def get_latest_mail(email_addr):
-    """获取最新一封邮件"""
+def get_latest_mails(email_addr, limit=10):
+    """获取最新邮件（包括收件箱和垃圾箱）"""
     if email_addr not in ACCOUNTS:
         return {'error': f'邮箱 "{email_addr}" 未绑定'}
     
@@ -215,45 +215,91 @@ def get_latest_mail(email_addr):
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
         
-        mail.select("INBOX")
-        status, data = mail.search(None, "ALL")
+        all_mail_ids = []
+        folder_info = []
         
-        if not data[0]:
-            return None
+        # 读取收件箱
+        try:
+            mail.select("INBOX")
+            status, data = mail.search(None, "ALL")
+            if data[0]:
+                for mid in data[0].split():
+                    all_mail_ids.append(mid)
+                    folder_info.append("收件箱")
+        except Exception as e:
+            print(f"读取收件箱失败: {e}")
         
-        mail_ids = data[0].split()
-        if not mail_ids:
-            return None
+        # 读取垃圾箱
+        spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
+        for folder in spam_folders:
+            try:
+                mail.select(folder)
+                status, data = mail.search(None, "ALL")
+                if data[0]:
+                    for mid in data[0].split():
+                        all_mail_ids.append(mid)
+                        folder_info.append(folder)
+                break
+            except:
+                continue
         
-        latest_id = mail_ids[-1]
+        if not all_mail_ids:
+            return []
         
-        _, msg_data = mail.fetch(latest_id, "(RFC822)")
+        # 去重
+        seen = set()
+        unique_ids = []
+        unique_folders = []
+        for mid, folder in zip(all_mail_ids, folder_info):
+            mid_str = mid.decode() if isinstance(mid, bytes) else str(mid)
+            if mid_str not in seen:
+                seen.add(mid_str)
+                unique_ids.append(mid)
+                unique_folders.append(folder)
         
-        for part in msg_data:
-            if isinstance(part, tuple):
-                msg = email.message_from_bytes(part[1])
+        # 按ID排序，取最新的
+        sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
+        latest_pairs = sorted_pairs[-limit:]
+        
+        mails = []
+        
+        for mail_id, folder in reversed(latest_pairs):
+            try:
+                mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
                 
-                date_str = msg.get("Date", "")
-                send_time = ""
-                try:
-                    if date_str:
-                        dt = parsedate_to_datetime(date_str)
-                        send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except:
-                    send_time = date_str[:30]
+                mail.select(folder)
+                _, msg_data = mail.fetch(mail_id, "(RFC822)")
                 
-                subject = decode_str(msg.get("Subject", "无主题"))
-                sender = decode_str(msg.get("From", "未知发件人"))
-                content = get_mail_content(msg)
-                
-                return {
-                    'sender': sender,
-                    'subject': subject,
-                    'content': content,
-                    'time': send_time
-                }
+                for part in msg_data:
+                    if isinstance(part, tuple):
+                        msg = email.message_from_bytes(part[1])
+                        
+                        date_str = msg.get("Date", "")
+                        send_time = ""
+                        try:
+                            if date_str:
+                                dt = parsedate_to_datetime(date_str)
+                                send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            send_time = date_str[:30]
+                        subject = decode_str(msg.get("Subject", "无主题"))
+                        sender = decode_str(msg.get("From", "未知发件人"))
+                        content = get_mail_content(msg)
+                        
+                        mails.append({
+                            'mail_id': mail_id_str,
+                            'sender': sender,
+                            'subject': subject,
+                            'content': content,
+                            'time': send_time,
+                            'folder': folder
+                        })
+                        break
+            except Exception as e:
+                print(f"读取单封邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
+                continue
         
-        return None
+        return mails
         
     except Exception as e:
         return {'error': f'连接失败：{str(e)}'}
@@ -336,7 +382,7 @@ def clean_expired_links():
     
     if cleaned_count > 0:
         save_links(cleaned_links)
-        backup_data()  # 清理后立即备份
+        backup_data()
     
     return cleaned_count
 
@@ -488,11 +534,9 @@ def admin():
     link_list = ""
     for link_id, data in links.items():
         status = '✅ 有效' if data['status'] == 'active' else '⛔ 禁用'
-        is_expired = False
         try:
             expire_time = datetime.strptime(data['expire_at'], "%Y-%m-%d %H:%M:%S")
             if now > expire_time:
-                is_expired = True
                 status = '⏰ 已过期'
         except:
             pass
@@ -623,7 +667,7 @@ def disable_link():
     
     links[link_id]['status'] = 'disabled'
     save_links(links)
-    backup_data()  # 实时备份
+    backup_data()
     
     return f'''
     <h2>✅ 链接已失效</h2>
@@ -717,7 +761,7 @@ def admin_create_link():
         'query_count': 0
     }
     save_links(links)
-    backup_data()  # 实时备份
+    backup_data()
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
     
@@ -770,7 +814,7 @@ def auto_create_link():
         'query_count': 0
     }
     save_links(links)
-    backup_data()  # 实时备份
+    backup_data()
     
     link_url = f"https://{DOMAIN}/query?link={link_id}"
 
@@ -812,7 +856,7 @@ def query_page():
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
         <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
             <h2>📬 邮箱查询系统</h2>
-            <p>输入已绑定的邮箱，查看最新邮件</p>
+            <p>输入已绑定的邮箱，查看最新邮件（包括垃圾箱）</p>
             <p style="color: #999; font-size: 13px;">有效期至：{link_data['expire_at']}</p>
             <form action="/api/query_mail" method="post">
                 <input type="hidden" name="link_id" value="{link_id}">
@@ -854,7 +898,8 @@ def query_mail():
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
     
-    result = get_latest_mail(email)
+    # 使用老函数查询最新1封（包括垃圾箱）
+    result = get_latest_mails(email, limit=1)
     
     if isinstance(result, dict) and 'error' in result:
         return f"查询失败：{result['error']}"
@@ -862,26 +907,37 @@ def query_mail():
     if not result:
         return "<h3>📭 暂无邮件</h3>"
     
+    # 取第一封邮件
+    mail = result[0]
+    
+    # 文件夹标签
+    folder_label = ""
+    if mail.get('folder') and '垃圾' in str(mail.get('folder')):
+        folder_label = '<span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">垃圾箱</span>'
+    elif mail.get('folder') and 'Spam' in str(mail.get('folder')):
+        folder_label = '<span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">垃圾箱</span>'
+    
     html_result = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; padding: 20px;">
-        <h3>📧 {email} 的最新邮件</h3>
+        <h3>📧 {email} 的最新邮件 {folder_label}</h3>
+        <p style="color: #999; font-size: 12px;">来源：{mail.get('folder', '收件箱')}</p>
         <div style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; background: #f9f9f9;">
             <div style="margin-bottom: 10px;">
                 <span style="font-weight: bold; color: #333;">发件人：</span>
-                <span>{result['sender']}</span>
+                <span>{mail['sender']}</span>
             </div>
             <div style="margin-bottom: 10px;">
                 <span style="font-weight: bold; color: #333;">主题：</span>
-                <span>{result['subject']}</span>
+                <span>{mail['subject']}</span>
             </div>
             <div style="margin-bottom: 10px;">
                 <span style="font-weight: bold; color: #333;">时间：</span>
-                <span style="color: #666;">{result.get('time', '未知')}</span>
+                <span style="color: #666;">{mail.get('time', '未知')}</span>
             </div>
             <div style="border-top: 1px solid #eee; padding-top: 10px;">
                 <div style="font-weight: bold; color: #333; margin-bottom: 5px;">邮件内容：</div>
                 <div style="white-space: pre-wrap; word-break: break-word; color: #555;">
-                    {result['content'][:2000]}
+                    {mail['content'][:2000]}
                 </div>
             </div>
         </div>
@@ -940,6 +996,7 @@ if __name__ == '__main__':
     print(f"数据持久化目录: {DATA_DIR}")
     print("后台密码: 060910")
     print("实时备份: ✅ 已启用")
+    print("垃圾箱查询: ✅ 已启用")
     print("访问 http://127.0.0.1:5000")
     print("=" * 60)
     
