@@ -278,7 +278,11 @@ def get_latest_mails(email_addr, limit=10):
                         send_time = ""
                         try:
                             if date_str:
+                                from email.utils import parsedate_to_datetime
                                 dt = parsedate_to_datetime(date_str)
+                                # 转换为北京时间（加8小时）
+                                from datetime import timedelta
+                                dt = dt + timedelta(hours=8)
                                 send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
                         except:
                             send_time = date_str[:30]
