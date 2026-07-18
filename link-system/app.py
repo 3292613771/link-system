@@ -170,6 +170,7 @@ def get_mail_content(msg):
     except Exception as e:
         return f"解析失败"
 
+# ===== 修改：默认只显示最新1封 =====
 def get_latest_mails(email_addr, limit=1):
     if email_addr not in ACCOUNTS:
         return {'error': f'邮箱 "{email_addr}" 未绑定'}
@@ -835,6 +836,7 @@ def query_page():
     '''
     return html_content
 
+# ===== 修改：limit 改为 1，只显示最新一封 =====
 @app.route('/api/query_mail', methods=['POST'])
 def query_mail():
     link_id = request.form.get('link_id')
@@ -860,7 +862,7 @@ def query_mail():
     if link_data.get('status') == 'disabled':
         return "链接已失效"
     
-    # ===== 使用老系统的查询逻辑 =====
+    # ===== 使用老系统的查询逻辑，limit=1 =====
     if email not in ACCOUNTS:
         return f"邮箱 {email} 未绑定"
     
