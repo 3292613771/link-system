@@ -225,7 +225,7 @@ def get_latest_mails(email_addr, limit=10):
             if data[0]:
                 for mid in data[0].split():
                     all_mail_ids.append(mid)
-                    folder_info.append("收件箱")
+                    folder_info.append("INBOX")
         except Exception as e:
             print(f"读取收件箱失败: {e}")
         
