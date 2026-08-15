@@ -13,10 +13,10 @@ import re
 import html
 import json
 from email.header import decode_header
-from email.utils import parsedate_to_datetime
+from email.utils import parsedate_tz, mktime_tz
 import uuid
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import shutil
 import threading
 
@@ -230,16 +230,17 @@ def get_latest_mails(email_addr, limit=10):
             print(f"读取收件箱失败: {e}")
         
         # 读取垃圾箱
-        spam_folders = ["垃圾箱", "广告邮件", "[Gmail]/Spam", "Spam", "Junk", "Junk Email"]
+        spam_folders = ["Junk", "Spam", "[Gmail]/Spam", "Junk Email"]
         for folder in spam_folders:
             try:
-                mail.select(folder)
+                status, _ = mail.select(folder)
+                if status != 'OK':
+                    continue
                 status, data = mail.search(None, "ALL")
                 if data[0]:
                     for mid in data[0].split():
                         all_mail_ids.append(mid)
                         folder_info.append(folder)
-                break
             except:
                 continue
         
@@ -278,14 +279,13 @@ def get_latest_mails(email_addr, limit=10):
                         send_time = ""
                         try:
                             if date_str:
-                                from email.utils import parsedate_to_datetime
-                                dt = parsedate_to_datetime(date_str)
-                                # 转换为北京时间（加8小时）
-                                from datetime import timedelta
-                                dt = dt + timedelta(hours=8)
+                                timestamp = mktime_tz(parsedate_tz(date_str))
+                                shanghai_tz = timezone(timedelta(hours=8))
+                                dt = datetime.fromtimestamp(timestamp, tz=shanghai_tz)
                                 send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except:
-                            send_time = date_str[:30]
+                        except Exception as e:
+                            print(f"时间解析失败: {e}")
+                            send_time = date_str[:30] if date_str else ""
                         subject = decode_str(msg.get("Subject", "无主题"))
                         sender = decode_str(msg.get("From", "未知发件人"))
                         content = get_mail_content(msg)
