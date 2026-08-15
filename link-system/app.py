@@ -203,8 +203,8 @@ def get_mail_content(msg):
     except Exception as e:
         return f"解析失败"
 
-def get_latest_mails(email_addr, limit=10):
-    """获取最新邮件（包括收件箱和垃圾箱）"""
+def get_latest_mails(email_addr, limit=1):
+    """获取最新邮件（包括收件箱和垃圾箱），按实际时间排序"""
     if email_addr not in ACCOUNTS:
         return {'error': f'邮箱 "{email_addr}" 未绑定'}
     
@@ -215,107 +215,76 @@ def get_latest_mails(email_addr, limit=10):
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
         
-        # ===== 临时调试：打印所有文件夹 =====
-        try:
-            status, folders = mail.list()
-            print(f"\n=== [{email_addr}] 的 IMAP 文件夹列表 ===")
-            for f in folders:
-                print(f.decode())
-            print("=" * 40)
-        except Exception as e:
-            print(f"获取文件夹列表失败: {e}")
-        # =====================================
-
-        all_mail_ids = []
-        folder_info = []
+        all_mails = []
+        folders_to_check = ["INBOX", "Junk", "Spam", "[Gmail]/Spam", "Junk Email", "Deleted Messages"]
         
-        # 读取收件箱
-        try:
-            mail.select("INBOX")
-            status, data = mail.search(None, "ALL")
-            if data[0]:
-                for mid in data[0].split():
-                    all_mail_ids.append(mid)
-                    folder_info.append("INBOX")
-        except Exception as e:
-            print(f"读取收件箱失败: {e}")
-        
-        # 读取垃圾箱
-        spam_folders = ["Junk", "Spam", "[Gmail]/Spam", "Junk Email"]
-        for folder in spam_folders:
+        for folder in folders_to_check:
             try:
                 status, _ = mail.select(folder)
                 if status != 'OK':
                     continue
+                
                 status, data = mail.search(None, "ALL")
-                if data[0]:
-                    for mid in data[0].split():
-                        all_mail_ids.append(mid)
-                        folder_info.append(folder)
+                if not data[0]:
+                    continue
+                
+                ids = data[0].split()
+                # 只取每个文件夹最新的 limit 封，减少 fetch 量
+                latest_ids = ids[-limit:] if len(ids) > limit else ids
+                
+                for mid in latest_ids:
+                    try:
+                        mail_id_str = mid.decode() if isinstance(mid, bytes) else str(mid)
+                        _, msg_data = mail.fetch(mid, "(RFC822)")
+                        
+                        for part in msg_data:
+                            if isinstance(part, tuple):
+                                msg = email.message_from_bytes(part[1])
+                                
+                                date_str = msg.get("Date", "")
+                                send_time = ""
+                                timestamp = 0
+                                try:
+                                    if date_str:
+                                        ts = mktime_tz(parsedate_tz(date_str))
+                                        shanghai_tz = timezone(timedelta(hours=8))
+                                        dt = datetime.fromtimestamp(ts, tz=shanghai_tz)
+                                        send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                                        timestamp = ts
+                                except Exception as e:
+                                    print(f"时间解析失败: {e}")
+                                    send_time = date_str[:30] if date_str else ""
+                                
+                                subject = decode_str(msg.get("Subject", "无主题"))
+                                sender = decode_str(msg.get("From", "未知发件人"))
+                                content = get_mail_content(msg)
+                                
+                                all_mails.append({
+                                    'mail_id': mail_id_str,
+                                    'sender': sender,
+                                    'subject': subject,
+                                    'content': content,
+                                    'time': send_time,
+                                    'timestamp': timestamp,
+                                    'folder': folder
+                                })
+                                break
+                    except Exception as e:
+                        print(f"读取邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
+                        continue
+                        
             except Exception as e:
                 print(f"读取文件夹 {folder} 失败: {e}")
                 continue
         
-        if not all_mail_ids:
-            return []
+        # 按实际时间戳排序，最新的在前
+        all_mails.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
         
-        # 去重
-        seen = set()
-        unique_ids = []
-        unique_folders = []
-        for mid, folder in zip(all_mail_ids, folder_info):
-            mid_str = mid.decode() if isinstance(mid, bytes) else str(mid)
-            if mid_str not in seen:
-                seen.add(mid_str)
-                unique_ids.append(mid)
-                unique_folders.append(folder)
+        # 去掉 timestamp 字段
+        for m in all_mails:
+            m.pop('timestamp', None)
         
-        # 按ID排序，取最新的
-        sorted_pairs = sorted(zip(unique_ids, unique_folders), key=lambda x: int(x[0]))
-        latest_pairs = sorted_pairs[-limit:]
-        
-        mails = []
-        
-        for mail_id, folder in reversed(latest_pairs):
-            try:
-                mail_id_str = mail_id.decode() if isinstance(mail_id, bytes) else str(mail_id)
-                
-                mail.select(folder)
-                _, msg_data = mail.fetch(mail_id, "(RFC822)")
-                
-                for part in msg_data:
-                    if isinstance(part, tuple):
-                        msg = email.message_from_bytes(part[1])
-                        
-                        date_str = msg.get("Date", "")
-                        send_time = ""
-                        try:
-                            if date_str:
-                                timestamp = mktime_tz(parsedate_tz(date_str))
-                                shanghai_tz = timezone(timedelta(hours=8))
-                                dt = datetime.fromtimestamp(timestamp, tz=shanghai_tz)
-                                send_time = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except Exception as e:
-                            print(f"时间解析失败: {e}")
-                            send_time = date_str[:30] if date_str else ""
-                        subject = decode_str(msg.get("Subject", "无主题"))
-                        sender = decode_str(msg.get("From", "未知发件人"))
-                        content = get_mail_content(msg)
-                        
-                        mails.append({
-                            'mail_id': mail_id_str,
-                            'sender': sender,
-                            'subject': subject,
-                            'content': content,
-                            'time': send_time,
-                            'folder': folder
-                        })
-                        break
-            except Exception as e:
-                print(f"读取单封邮件失败 (ID:{mail_id_str}, Folder:{folder}): {e}")
-                continue
-        
-        return mails
+        return all_mails[:limit]
         
     except Exception as e:
         return {'error': f'连接失败：{str(e)}'}
