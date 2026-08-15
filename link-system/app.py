@@ -214,7 +214,17 @@ def get_latest_mails(email_addr, limit=10):
     try:
         mail = imaplib.IMAP4_SSL("imap.qq.com")
         mail.login(email_addr, auth_code)
+                mail.login(email_addr, auth_code)
         
+        # ===== 临时调试：打印所有文件夹 =====
+        status, folders = mail.list()
+        print(f"\n=== [{email_addr}] 的 IMAP 文件夹列表 ===")
+        for f in folders:
+            print(f.decode())
+        print("=" * 40)
+        # =====================================
+        
+        all_mail_ids = []
         all_mail_ids = []
         folder_info = []
         
