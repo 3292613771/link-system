@@ -875,7 +875,7 @@ def query_mail():
         return "⛔ 链接已被禁用"
     
     if email not in link_data['emails']:
-        return f"该邮箱不在本链接中，可查询的邮箱：{', '.join(link_data['emails'])}"
+        return f"该邮箱不在本链接中"
     
     link_data['query_count'] = link_data.get('query_count', 0) + 1
     save_links(links)
