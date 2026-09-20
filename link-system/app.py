@@ -19,14 +19,16 @@ import random
 from datetime import datetime, timedelta, timezone
 import shutil
 import threading
+import subprocess
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
-# ===== 全局写锁（防止极少数情况下的并发写入冲突） =====
-save_lock = threading.Lock()
+# ===== 全局内存缓存（极大提升性能，防止卡顿） =====
+LINKS_CACHE = None
+CACHE_LOCK = threading.Lock()
 
-# ===== 配置文件路径（支持持久化） =====
+# ===== 配置文件路径 =====
 PERSISTENT_DIR = os.environ.get('PERSISTENT_DIR', '/data')
 DATA_DIR = os.path.join(PERSISTENT_DIR, 'mail_data')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
@@ -38,7 +40,6 @@ for dir_path in [PERSISTENT_DIR, DATA_DIR, BACKUP_DIR]:
 
 LINKS_FILE = os.path.join(DATA_DIR, "links.json")
 USED_EMAILS_FILE = os.path.join(DATA_DIR, "used_emails.json")
-
 LOCAL_LINKS_FILE = "links.json"
 LOCAL_USED_FILE = "used_emails.json"
 
@@ -61,6 +62,64 @@ ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '060910')
 DEFAULT_DAYS = 30
 DOMAIN = os.environ.get('DOMAIN', 'mail-auto.zeabur.app')
 
+# ===== 安全写入函数（原子替换 + 防缩水） =====
+def safe_write_json(filepath, data):
+    temp_file = filepath + '.tmp'
+    try:
+        # 1. 数据防缩水保护
+        old_count = 0
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    old_count = len(json.load(f))
+            except: pass
+        
+        new_count = len(data)
+        if old_count > 100 and new_count < old_count * 0.5:
+            print(f"⚠️ 警告：数据异常缩水！旧:{old_count} 新:{new_count}，拒绝覆盖！")
+            return False
+        
+        # 2. 先写入临时文件
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        # 3. 强制替换（兼容权限问题，使用系统级 mv -f 命令）
+        subprocess.run(['mv', '-f', temp_file, filepath], check=True)
+        return True
+    except Exception as e:
+        print(f"❌ 保存 {filepath} 失败: {e}")
+        if os.path.exists(temp_file): 
+            try: os.remove(temp_file)
+            except: pass
+        return False
+
+# ===== 读取 links.json =====
+def load_links_from_disk():
+    try:
+        if os.path.exists(LINKS_FILE):
+            with open(LINKS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        print(f"❌ 读取 links.json 失败：{e}")
+        return {}
+
+# ===== 核心后台保存线程（每 5 秒保存一次，防止卡顿） =====
+def background_saver():
+    global LINKS_CACHE
+    last_saved_data = None
+    while True:
+        time.sleep(5)
+        if LINKS_CACHE is not None:
+            # 只有数据发生变化时才保存
+            if LINKS_CACHE != last_saved_data:
+                if safe_write_json(LINKS_FILE, LINKS_CACHE):
+                    last_saved_data = json.loads(json.dumps(LINKS_CACHE)) # 深拷贝比较
+
+saver_thread = threading.Thread(target=background_saver, daemon=True)
+saver_thread.start()
+
+# ===== 加载账号 =====
 def load_accounts():
     accounts = {}
     try:
@@ -94,7 +153,6 @@ def load_accounts():
 
 ACCOUNTS = load_accounts()
 print(f"已加载 {len(ACCOUNTS)} 个绑定邮箱")
-print(f"数据存储路径: {DATA_DIR}")
 
 def get_auth_map(): return ACCOUNTS
 
@@ -253,7 +311,11 @@ def auto_backup_worker():
         except Exception as e: print(f"自动备份出错: {e}")
 
 def clean_expired_links():
-    links = load_links()
+    global LINKS_CACHE
+    if LINKS_CACHE is None:
+        with CACHE_LOCK:
+            if LINKS_CACHE is None: LINKS_CACHE = load_links_from_disk()
+    links = LINKS_CACHE or {}
     now = datetime.now()
     cleaned_count = 0
     cleaned_links = {}
@@ -266,8 +328,8 @@ def clean_expired_links():
         except: pass
         cleaned_links[link_id] = data
     if cleaned_count > 0:
-        save_links(cleaned_links)
-        backup_data()
+        with CACHE_LOCK:
+            LINKS_CACHE = cleaned_links
     return cleaned_count
 
 def auto_clean_worker():
@@ -283,26 +345,19 @@ backup_thread.start()
 clean_thread = threading.Thread(target=auto_clean_worker, daemon=True)
 clean_thread.start()
 
+# ===== 数据读取（优先从内存读取，极速） =====
 def load_links():
-    try:
-        if os.path.exists(LINKS_FILE):
-            with open(LINKS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        print(f"❌ 读取 links.json 失败：{e}")
-        return {}
+    global LINKS_CACHE
+    if LINKS_CACHE is None:
+        with CACHE_LOCK:
+            if LINKS_CACHE is None: LINKS_CACHE = load_links_from_disk()
+    return LINKS_CACHE
 
-# ===== 安全写入 links.json（核心防丢逻辑） =====
 def save_links(data):
-    temp_file = LINKS_FILE + '.tmp'
-    try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, LINKS_FILE)
-    except Exception as e:
-        print(f"❌ 保存 links.json 失败: {e}")
-        if os.path.exists(temp_file): os.remove(temp_file)
+    """内存更新，由后台线程负责写盘，不会阻塞用户请求"""
+    global LINKS_CACHE
+    with CACHE_LOCK:
+        LINKS_CACHE = data
 
 def load_used_emails():
     try:
@@ -312,16 +367,8 @@ def load_used_emails():
         return {"records": {}}
     except: return {"records": {}}
 
-# ===== 安全写入 used_emails.json（核心防丢逻辑） =====
 def save_used_emails(data):
-    temp_file = USED_EMAILS_FILE + '.tmp'
-    try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, USED_EMAILS_FILE)
-    except Exception as e:
-        print(f"❌ 保存 used_emails.json 失败: {e}")
-        if os.path.exists(temp_file): os.remove(temp_file)
+    safe_write_json(USED_EMAILS_FILE, data)
 
 def detect_email_type(email):
     if email.endswith("@foxmail.com"): return "foxmail"
@@ -601,12 +648,8 @@ def query_mail():
     if link_data['status'] != 'active': return "⛔ 链接已被禁用"
     if email not in link_data['emails']: return f"该邮箱不在本链接中"
     
-    # ================== 核心优化：使用轻量级写锁，防止并发冲突 ==================
-    with save_lock:
-        link_data['query_count'] = link_data.get('query_count', 0) + 1
-        if links:
-            save_links(links)
-    # ==========================================================================
+    # 现在这一步只是修改内存里的数字，速度极快，不会阻塞用户
+    link_data['query_count'] = link_data.get('query_count', 0) + 1
     
     if email not in ACCOUNTS: return f"邮箱 {email} 未绑定"
     result = get_latest_mails(email, limit=1)
